@@ -160,11 +160,30 @@ def generate_pdf_via_headless(doc_id: str, expected_page_count: int = 1, cookie_
 
     html = re.sub(r'<script[\s\S]*?</script>', '', html)
 
+    # Auto-detect native document dimensions & aspect ratio from embed structure
+    dim_match = re.search(r'id=["\']outer_page_1["\'][^>]*style=["\'][^"\']*width:\s*(\d+)px;\s*height:\s*(\d+)px', html)
+    if not dim_match:
+        dim_match = re.search(r'origWidth[:\s]+(\d+)[\s,]+origHeight[:\s]+(\d+)', html)
+    if not dim_match:
+        dim_match = re.search(r'width:\s*(\d+)px;\s*height:\s*(\d+)px', html)
+
+    if dim_match:
+        native_w = int(dim_match.group(1))
+        native_h = int(dim_match.group(2))
+    else:
+        native_w, native_h = 902, 1167
+
+    # Keep native bounds within printable ratios; default to A4 if continuous web capture
+    if native_h > native_w * 2.0 or native_h < 100 or native_w < 100:
+        doc_w, doc_h = 794, 1122
+    else:
+        doc_w, doc_h = native_w, native_h
+
     print_rules = f"""
 <style>
 {''.join(font_css_rules)}
 
-@page {{ size: 210mm 297mm; margin: 0; }}
+@page {{ size: {doc_w}px {doc_h}px; margin: 0; }}
 html, body {{ margin: 0 !important; padding: 0 !important; background: #fff !important; width: 100% !important; }}
 header, footer, nav, .toolbar, .toolbar_container, .document_toolbar, 
 .embed_header, .mobile_header, .bottom_bar, .action_bar, .share_btn,
@@ -189,8 +208,8 @@ header, footer, nav, .toolbar, .toolbar_container, .document_toolbar,
     break-inside: avoid !important;
     display: block !important; 
     position: relative !important; 
-    width: 794px !important; 
-    height: 1122px !important; 
+    width: {doc_w}px !important; 
+    height: {doc_h}px !important; 
     margin: 0 auto !important; 
     overflow: hidden !important; 
     contain: none !important;
@@ -200,18 +219,17 @@ header, footer, nav, .toolbar, .toolbar_container, .document_toolbar,
     position: absolute !important; 
     left: 0 !important; 
     top: 0 !important; 
-    width: 902px !important; 
-    height: 1167px !important; 
+    width: {doc_w}px !important; 
+    height: {doc_h}px !important; 
     display: block !important; 
-    transform: scale(0.88) !important;
-    transform-origin: top left !important;
+    transform: none !important;
 }}
 .text_layer {{ 
     position: absolute !important; 
     left: 0 !important; 
     top: 0 !important; 
-    width: 902px !important; 
-    height: 1167px !important; 
+    width: {doc_w}px !important; 
+    height: {doc_h}px !important; 
     z-index: 2 !important; 
     color: #000 !important; 
     opacity: 1 !important; 
@@ -716,19 +734,39 @@ def download_scribd_document(
         if sorted_nums and len(sorted_nums) >= max(1, int(page_count * 0.5)):
             pil_images = [fetched_dict[n] for n in sorted_nums if n in fetched_dict]
             if pil_images:
-                pil_images[0].save(
+                # Auto-expand any ultra-tall continuous web captures into standard A4 pages
+                expanded_images = []
+                for im in pil_images:
+                    iw, ih = im.size
+                    if ih > iw * 1.8:
+                        page_h = int(iw * 1.414)
+                        y = 0
+                        while y < ih:
+                            box = (0, y, iw, min(ih, y + page_h))
+                            slice_im = im.crop(box)
+                            if slice_im.size[1] < page_h:
+                                pad = Image.new('RGB', (iw, page_h), color='#ffffff')
+                                pad.paste(slice_im, (0, 0))
+                                slice_im = pad
+                            expanded_images.append(slice_im)
+                            y += page_h
+                    else:
+                        expanded_images.append(im)
+
+                final_images = expanded_images if expanded_images else pil_images
+                final_images[0].save(
                     cache_filepath,
                     "PDF",
                     resolution=100.0,
                     save_all=True,
-                    append_images=pil_images[1:]
+                    append_images=final_images[1:]
                 )
                 PROGRESS_TRACKER[doc_id] = {
                     "status": "complete",
-                    "current": len(pil_images),
-                    "total": page_count,
+                    "current": len(final_images),
+                    "total": max(page_count, len(final_images)),
                     "percent": 100,
-                    "message": f"Complete {len(pil_images)}-page PDF ready!"
+                    "message": f"Complete {len(final_images)}-page PDF ready!"
                 }
                 encoded_fn = urllib.parse.quote(f"{safe_title}.pdf")
                 return FileResponse(
