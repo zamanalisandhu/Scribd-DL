@@ -2,6 +2,7 @@ import os
 import io
 import re
 import json
+import gzip
 import shutil
 import subprocess
 import urllib.request
@@ -87,12 +88,65 @@ def generate_pdf_via_headless(doc_id: str, expected_page_count: int = 1, cookie_
     html = html.replace('http://html.scribd.com', 'https://html.scribd.com')
     html = html.replace('http://html.scribdassets.com', 'https://html.scribdassets.com')
     html = re.sub(r'orig=["\'](https?://[^"\']+)["\']', r'src="\1" orig="\1"', html)
+
+    # Discover and fetch all lazy-loaded JSONP page chunks (Scribd delivers pages 4..N as gzipped JSONP)
+    asset_match = re.search(r'html\.scribd(?:assets)?\.com/([a-zA-Z0-9]+)/', html)
+    asset_key = asset_match.group(1) if asset_match else None
+    jsonp_matches = re.findall(r'pages/(\d+)-([a-zA-Z0-9]+)\.jsonp', html)
+
+    if asset_key and jsonp_matches:
+        def fetch_jsonp_page(item):
+            pn, h_val = item
+            domains = ['html.scribdassets.com', 'html.scribd.com']
+            for dom in domains:
+                try:
+                    u = f"https://{dom}/{asset_key}/pages/{pn}-{h_val}.jsonp"
+                    req = urllib.request.Request(u, headers=req_headers)
+                    with urllib.request.urlopen(req, timeout=9) as resp:
+                        raw = resp.read()
+                        try:
+                            dec = gzip.decompress(raw).decode('utf-8', errors='ignore')
+                        except Exception:
+                            dec = raw.decode('utf-8', errors='ignore')
+                        m = re.search(r'window\.page\d+_callback\(\s*(\[[\s\S]*\])\s*\)', dec)
+                        if m:
+                            arr = json.loads(m.group(1))
+                            return int(pn), arr[0]
+                except Exception:
+                    pass
+            return int(pn), None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+            futs = [ex.submit(fetch_jsonp_page, item) for item in jsonp_matches]
+            for f in concurrent.futures.as_completed(futs):
+                pn, p_content = f.result()
+                if p_content:
+                    outer_target = f'id="outer_page_{pn}"'
+                    if outer_target in html:
+                        idx = html.find(outer_target)
+                        tag_end = html.find('>', idx)
+                        if tag_end != -1:
+                            html = html[:tag_end+1] + '\n' + p_content + '\n' + html[tag_end+1:]
+                    else:
+                        new_outer = f'<div class="outer_page only_ie6_border" id="outer_page_{pn}" style="width:902px; height:1167px;">\n{p_content}\n</div>\n'
+                        scroller_idx = html.find('class="document_scroller')
+                        if scroller_idx != -1:
+                            tag_end = html.find('>', scroller_idx)
+                            html = html[:tag_end+1] + '\n' + new_outer + html[tag_end+1:]
+
     html = re.sub(r'<script[\s\S]*?</script>', '', html)
 
     print_rules = """
 <style>
 @page { size: 210mm 297mm; margin: 0; }
 html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; width: 100% !important; }
+header, footer, nav, .toolbar, .toolbar_container, .document_toolbar, 
+.embed_header, .mobile_header, .bottom_bar, .action_bar, .share_btn,
+.between_page_ads, .page_missing_explanation_view, .upgrade_button,
+.page_blur, .blur, .promo_wrapper, .mobile_overlay, .toolbar_drop {
+    display: none !important;
+    visibility: hidden !important;
+}
 .auto__embeds_new_show, .document_scroller, .document_container, .outer_page_container { 
     height: auto !important; 
     max-height: none !important; 
@@ -114,6 +168,7 @@ html, body { margin: 0 !important; padding: 0 !important; background: #fff !impo
     margin: 0 auto !important; 
     overflow: hidden !important; 
     contain: none !important;
+    border: none !important;
 }
 .newpage { 
     position: absolute !important; 
@@ -184,18 +239,14 @@ div.ff1 span, div.ff2 span, div.ff3 span, div.ff4 span, div.ff5 span, div.ff7 sp
         if os.path.exists(raw_pdf_path) and os.path.getsize(raw_pdf_path) > 1000:
             reader = pypdf.PdfReader(raw_pdf_path)
             writer = pypdf.PdfWriter()
-            is_scanned_doc = all(len(p.extract_text().strip()) < 20 for p in reader.pages)
             for p in reader.pages:
                 txt = p.extract_text().strip()
-                if is_scanned_doc:
-                    if len(p.images) > 0:
-                        writer.add_page(p)
-                else:
-                    if len(txt) > 50:
-                        writer.add_page(p)
+                # Include page if it has text or images, or is part of a multi-page document
+                if len(txt) > 0 or len(p.images) > 0 or len(reader.pages) <= expected_page_count:
+                    writer.add_page(p)
 
             # Check if embed is only a preview snippet of a much larger document
-            if expected_page_count > 3 and len(writer.pages) < expected_page_count * 0.8:
+            if expected_page_count > 3 and len(writer.pages) < expected_page_count * 0.7:
                 print(f"[INFO] Embed rendered only {len(writer.pages)} of {expected_page_count} pages. Falling back to multi-page image stitcher.")
                 return None
 
@@ -642,30 +693,31 @@ def download_scribd_document(
         avg_size = (sum(raw_sizes) / len(raw_sizes)) if raw_sizes else 0
         has_rich_text = any(len(lines) >= 8 for lines in per_page_text)
 
-        # Case A: Document is genuine scanned bitmap photos (average image >= 15KB or book with many pages)
-        if sorted_nums and (avg_size >= 15000 or not has_rich_text or len(sorted_nums) > 5):
-            pil_images = [fetched_dict[n] for n in sorted_nums]
-            pil_images[0].save(
-                cache_filepath,
-                "PDF",
-                resolution=100.0,
-                save_all=True,
-                append_images=pil_images[1:]
-            )
-            PROGRESS_TRACKER[doc_id] = {
-                "status": "complete",
-                "current": total_imgs,
-                "total": total_imgs,
-                "percent": 100,
-                "message": f"Complete {total_imgs}-page PDF ready!"
-            }
-            encoded_fn = urllib.parse.quote(f"{safe_title}.pdf")
-            return FileResponse(
-                cache_filepath,
-                media_type="application/pdf",
-                filename=f"{safe_title}.pdf",
-                headers={"Content-Disposition": f'attachment; filename="{safe_title}.pdf"; filename*=UTF-8\'\'{encoded_fn}'}
-            )
+        # Case A: Document images successfully fetched (genuine scanned bitmap photos or multi-page assets)
+        if sorted_nums and len(sorted_nums) >= max(1, int(page_count * 0.5)):
+            pil_images = [fetched_dict[n] for n in sorted_nums if n in fetched_dict]
+            if pil_images:
+                pil_images[0].save(
+                    cache_filepath,
+                    "PDF",
+                    resolution=100.0,
+                    save_all=True,
+                    append_images=pil_images[1:]
+                )
+                PROGRESS_TRACKER[doc_id] = {
+                    "status": "complete",
+                    "current": len(pil_images),
+                    "total": page_count,
+                    "percent": 100,
+                    "message": f"Complete {len(pil_images)}-page PDF ready!"
+                }
+                encoded_fn = urllib.parse.quote(f"{safe_title}.pdf")
+                return FileResponse(
+                    cache_filepath,
+                    media_type="application/pdf",
+                    filename=f"{safe_title}.pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{safe_title}.pdf"; filename*=UTF-8\'\'{encoded_fn}'}
+                )
 
     # Case B: Document is text-based (Word doc, essay, university assignment, thesis)
     rendered_pages = []
