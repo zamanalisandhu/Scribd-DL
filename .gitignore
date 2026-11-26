@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+cache/*
+!cache/.gitkeep
+.env
+venv/
+.venv/
+.idea/
+.vscode/
