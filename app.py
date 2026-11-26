@@ -134,20 +134,46 @@ def generate_pdf_via_headless(doc_id: str, expected_page_count: int = 1, cookie_
                             tag_end = html.find('>', scroller_idx)
                             html = html[:tag_end+1] + '\n' + new_outer + html[tag_end+1:]
 
+    # Discover and declare all embedded Scribd fonts (@font-face)
+    all_font_ids = set()
+    for match in re.findall(r'fonts:\s*\[([0-9,\s]+)\]', html):
+        for f in match.split(','):
+            if f.strip().isdigit():
+                all_font_ids.add(int(f.strip()))
+    for ff in re.findall(r'\bff(\d+)\b', html):
+        all_font_ids.add(int(ff))
+
+    font_css_rules = []
+    if asset_key and all_font_ids:
+        for fid in sorted(all_font_ids):
+            f_code = str(fid).zfill(4)
+            font_url = f"https://html.scribdassets.com/{asset_key}/fonts/{f_code}.woff2"
+            font_css_rules.append(f"""
+@font-face {{
+    font-family: 'ff{fid}';
+    src: url('{font_url}') format('woff2');
+}}
+.ff{fid}, div.ff{fid}, span.ff{fid} {{
+    font-family: 'ff{fid}' !important;
+}}
+""")
+
     html = re.sub(r'<script[\s\S]*?</script>', '', html)
 
-    print_rules = """
+    print_rules = f"""
 <style>
-@page { size: 210mm 297mm; margin: 0; }
-html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; width: 100% !important; }
+{''.join(font_css_rules)}
+
+@page {{ size: 210mm 297mm; margin: 0; }}
+html, body {{ margin: 0 !important; padding: 0 !important; background: #fff !important; width: 100% !important; }}
 header, footer, nav, .toolbar, .toolbar_container, .document_toolbar, 
 .embed_header, .mobile_header, .bottom_bar, .action_bar, .share_btn,
 .between_page_ads, .page_missing_explanation_view, .upgrade_button,
-.page_blur, .blur, .promo_wrapper, .mobile_overlay, .toolbar_drop {
+.page_blur, .blur, .promo_wrapper, .mobile_overlay, .toolbar_drop {{
     display: none !important;
     visibility: hidden !important;
-}
-.auto__embeds_new_show, .document_scroller, .document_container, .outer_page_container { 
+}}
+.auto__embeds_new_show, .document_scroller, .document_container, .outer_page_container {{ 
     height: auto !important; 
     max-height: none !important; 
     overflow: visible !important; 
@@ -155,8 +181,8 @@ header, footer, nav, .toolbar, .toolbar_container, .document_toolbar,
     display: block !important; 
     margin: 0 !important;
     padding: 0 !important;
-}
-.outer_page { 
+}}
+.outer_page {{ 
     page-break-after: always !important; 
     break-after: page !important; 
     page-break-inside: avoid !important;
@@ -169,8 +195,8 @@ header, footer, nav, .toolbar, .toolbar_container, .document_toolbar,
     overflow: hidden !important; 
     contain: none !important;
     border: none !important;
-}
-.newpage { 
+}}
+.newpage {{ 
     position: absolute !important; 
     left: 0 !important; 
     top: 0 !important; 
@@ -179,8 +205,8 @@ header, footer, nav, .toolbar, .toolbar_container, .document_toolbar,
     display: block !important; 
     transform: scale(0.88) !important;
     transform-origin: top left !important;
-}
-.text_layer { 
+}}
+.text_layer {{ 
     position: absolute !important; 
     left: 0 !important; 
     top: 0 !important; 
@@ -191,33 +217,17 @@ header, footer, nav, .toolbar, .toolbar_container, .document_toolbar,
     opacity: 1 !important; 
     transform: none !important;
     zoom: 0.2 !important;
-}
-.text_layer div, .text_layer span {
+}}
+.text_layer div, .text_layer span {{
     white-space: nowrap !important;
     line-height: 1 !important;
-}
-.text_layer span.a, .text_layer span.g {
+}}
+.text_layer span.a, .text_layer span.g {{
     position: absolute !important;
-}
-.absimg { position: absolute !important; display: block !important; z-index: 1 !important; }
-
-/* When absimg background image is present, keep text_layer transparent to eliminate ghosting & font-scramble artifacts */
-.newpage img.absimg ~ .text_layer,
-.outer_page img.absimg ~ .newpage .text_layer,
-.outer_page:has(img.absimg) .text_layer {
-    opacity: 0 !important;
-    color: transparent !important;
-}
-
-.outer_page.blurred_page { filter: none !important; }
-.outer_page.blurred_page .text_layer { color: #000 !important; text-shadow: none !important; }
-
-/* Scribd font fallback typography */
-div.ff0 span, .ff0 { font-family: "Times New Roman", Times, serif !important; font-weight: bold !important; font-style: normal !important; }
-div.ff6 span, .ff6 { font-family: "Times New Roman", Times, serif !important; font-weight: normal !important; font-style: italic !important; }
-div.ff8 span, .ff8 { font-family: "Times New Roman", Times, serif !important; font-weight: normal !important; font-style: normal !important; }
-div.ff1 span, div.ff2 span, div.ff3 span, div.ff4 span, div.ff5 span, div.ff7 span, div.ff9 span,
-.ff1, .ff2, .ff3, .ff4, .ff5, .ff7, .ff9 { font-family: Arial, Helvetica, sans-serif !important; font-weight: normal !important; font-style: normal !important; }
+}}
+.absimg {{ position: absolute !important; display: block !important; z-index: 1 !important; }}
+.outer_page.blurred_page {{ filter: none !important; }}
+.outer_page.blurred_page .text_layer {{ color: #000 !important; text-shadow: none !important; }}
 </style>
 """
     if '</head>' in html:
