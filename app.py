@@ -200,6 +200,15 @@ header, footer, nav, .toolbar, .toolbar_container, .document_toolbar,
     position: absolute !important;
 }
 .absimg { position: absolute !important; display: block !important; z-index: 1 !important; }
+
+/* When absimg background image is present, keep text_layer transparent to eliminate ghosting & font-scramble artifacts */
+.newpage img.absimg ~ .text_layer,
+.outer_page img.absimg ~ .newpage .text_layer,
+.outer_page:has(img.absimg) .text_layer {
+    opacity: 0 !important;
+    color: transparent !important;
+}
+
 .outer_page.blurred_page { filter: none !important; }
 .outer_page.blurred_page .text_layer { color: #000 !important; text-shadow: none !important; }
 
