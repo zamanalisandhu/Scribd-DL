@@ -671,6 +671,9 @@ public class ScribdService {
             }
 
             html = html.replaceAll("<script[\\s\\S]*?</script>", "");
+            html = html.replaceAll("<iframe[\\s\\S]*?</iframe>", "");
+            html = html.replaceAll("<iframe[^>]*>", "");
+            html = html.replaceAll("<noscript[\\s\\S]*?</noscript>", "");
 
             // Auto-detect native document dimensions
             int nativeW = 902;

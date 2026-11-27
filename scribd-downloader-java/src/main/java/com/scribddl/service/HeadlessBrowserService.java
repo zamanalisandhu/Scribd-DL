@@ -83,9 +83,8 @@ public class HeadlessBrowserService {
 
             String fileUrl = tempHtml.toUri().toString();
 
-            // Generous bounded timeout for cloud execution: minimum 40s, up to 65s
-            long timeoutSeconds = Math.min(65, Math.max(40, (long) (expectedPageCount * 3.0)));
-            long virtualBudgetMs = Math.min(15000, Math.max(5000, expectedPageCount * 600));
+            // Bounded timeout for headless execution: minimum 30s, up to 60s
+            long timeoutSeconds = Math.min(60, Math.max(30, (long) (expectedPageCount * 2.0)));
 
             List<String> command = new ArrayList<>(Arrays.asList(
                     browserPath,
@@ -106,8 +105,6 @@ public class HeadlessBrowserService {
                     "--allow-running-insecure-content",
                     "--allow-file-access-from-files",
                     "--user-data-dir=" + tempProfile.toAbsolutePath().toString(),
-                    "--run-all-compositor-stages-before-draw",
-                    "--virtual-time-budget=" + virtualBudgetMs,
                     "--no-pdf-header-footer",
                     "--print-to-pdf=" + tempPdf.toAbsolutePath().toString(),
                     fileUrl

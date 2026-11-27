@@ -42,15 +42,6 @@ public class ScribdController {
         map.put("browser_available", headlessBrowserService.isAvailable());
         map.put("browser_path", headlessBrowserService.getBrowserPath());
         map.put("browser_version", headlessBrowserService.testBrowserVersion());
-
-        try {
-            String testHtml = "<!DOCTYPE html><html><body><h1>Diag Test</h1><p>Rendering ok</p></body></html>";
-            byte[] testPdf = headlessBrowserService.renderHtmlToPdf(testHtml, "diag_check", 1);
-            map.put("test_render_pdf_bytes", testPdf != null ? testPdf.length : 0);
-            map.put("test_render_status", testPdf != null ? "SUCCESS" : "FAILED");
-        } catch (Exception e) {
-            map.put("test_render_error", e.getMessage());
-        }
         map.put("last_browser_execution", headlessBrowserService.getLastExecutionLog());
         return ResponseEntity.ok(map);
     }
