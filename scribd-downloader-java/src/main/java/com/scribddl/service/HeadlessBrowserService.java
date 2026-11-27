@@ -83,8 +83,8 @@ public class HeadlessBrowserService {
 
             String fileUrl = tempHtml.toUri().toString();
 
-            // Bounded timeout for headless execution: minimum 30s, up to 60s
-            long timeoutSeconds = Math.min(60, Math.max(30, (long) (expectedPageCount * 2.0)));
+            // Cloud bounded timeout: minimum 45s, up to 75s
+            long timeoutSeconds = Math.min(75, Math.max(45, (long) (expectedPageCount * 2.5)));
 
             List<String> command = new ArrayList<>(Arrays.asList(
                     browserPath,

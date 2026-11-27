@@ -639,17 +639,8 @@ public class ScribdService {
             html = html.replaceAll("opacity:\\s*0\\.01", "opacity: 1");
             html = html.replaceAll("opacity:0\\.01", "opacity: 1");
 
-            // Discover and declare all embedded Scribd fonts across FULL document
+            // Discover and declare only the embedded Scribd fonts ACTUALLY used in the document
             Set<Integer> allFontIds = new TreeSet<>();
-            Matcher fontArrayMatcher = Pattern.compile("fonts:\\s*\\[([0-9,\\s]+)\\]").matcher(html);
-            while (fontArrayMatcher.find()) {
-                for (String f : fontArrayMatcher.group(1).split(",")) {
-                    String trimmed = f.trim();
-                    if (trimmed.matches("\\d+")) {
-                        allFontIds.add(Integer.parseInt(trimmed));
-                    }
-                }
-            }
             Matcher ffMatcher = Pattern.compile("\\bff(\\d+)\\b").matcher(html);
             while (ffMatcher.find()) {
                 allFontIds.add(Integer.parseInt(ffMatcher.group(1)));
@@ -663,6 +654,7 @@ public class ScribdService {
                     fontCss.append("@font-face {\n")
                             .append("    font-family: 'ff").append(fid).append("';\n")
                             .append("    src: url('").append(fontUrl).append("') format('woff2');\n")
+                            .append("    font-display: swap;\n")
                             .append("}\n")
                             .append(".ff").append(fid).append(", div.ff").append(fid).append(", span.ff").append(fid).append(" {\n")
                             .append("    font-family: 'ff").append(fid).append("' !important;\n")
