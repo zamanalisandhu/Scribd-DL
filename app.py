@@ -38,6 +38,9 @@ app.add_middleware(
 META_CACHE = {}
 PROGRESS_TRACKER = {}
 
+# Server-wide default Scribd cookie (configured via environment variable if available)
+DEFAULT_SCRIBD_COOKIE = os.environ.get("SCRIBD_COOKIE", "").strip()
+
 def find_headless_browser() -> Optional[str]:
     candidates = [
         # Linux / Docker paths
@@ -500,6 +503,7 @@ def download_scribd_document(
 ):
     target_url = url.strip()
     fmt = format.strip().lower()
+    effective_cookie = cookie.strip() if cookie and cookie.strip() else DEFAULT_SCRIBD_COOKIE
 
     if not target_url:
         raise HTTPException(status_code=400, detail="Missing url parameter")
@@ -524,7 +528,7 @@ def download_scribd_document(
     per_page_text = doc_info.get('perPageText', [])
 
     # Fast Cache Hit Check (Directly returns cached file if valid and complete)
-    if not cookie and os.path.exists(cache_filepath) and os.path.getsize(cache_filepath) > 1000:
+    if not effective_cookie and os.path.exists(cache_filepath) and os.path.getsize(cache_filepath) > 1000:
         is_cache_valid = True
         if fmt == 'pdf' and page_count > 3:
             try:
@@ -576,13 +580,13 @@ def download_scribd_document(
         "message": f"Analyzing document structure ({page_count} pages)..."
     }
 
-    # 1. Direct Official Scribd Session Download (if cookie provided)
-    if cookie and doc_id:
+    # 1. Direct Official Scribd Session Download (if cookie provided or configured via env)
+    if effective_cookie and doc_id:
         try:
             direct_url = f"https://www.scribd.com/document_downloads/{doc_id}?extension={fmt}"
             dl_req = urllib.request.Request(direct_url, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-                'Cookie': cookie,
+                'Cookie': effective_cookie,
                 'Referer': f"https://www.scribd.com/document/{doc_id}"
             })
             with urllib.request.urlopen(dl_req, timeout=12) as dl_resp:
@@ -656,7 +660,7 @@ def download_scribd_document(
             "percent": 30,
             "message": f"Rendering 1:1 original layout ({page_count} pages)..."
         }
-        original_pdf = generate_pdf_via_headless(doc_id, expected_page_count=page_count, cookie_str=cookie)
+        original_pdf = generate_pdf_via_headless(doc_id, expected_page_count=page_count, cookie_str=effective_cookie)
         if original_pdf and len(original_pdf) > 2000:
             with open(cache_filepath, "wb") as cf:
                 cf.write(original_pdf)
