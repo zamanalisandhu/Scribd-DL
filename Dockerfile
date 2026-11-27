@@ -6,17 +6,22 @@ RUN mvn dependency:go-offline -B
 COPY scribd-downloader-java/src ./src
 RUN mvn clean package -DskipTests
 
-# Stage 2: Runtime Image with Chromium Headless support
+# Stage 2: Runtime Image with Official Google Chrome & Fonts
 FROM eclipse-temurin:17-jre
 WORKDIR /app
 
-# Install Chromium and fonts for 1:1 Vector PDF printing
+# Install dependencies, Google Chrome Stable & essential fonts for 1:1 Vector rendering
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium \
+    wget \
+    gnupg \
+    ca-certificates \
     fonts-liberation \
     fonts-dejavu-core \
     fonts-freefont-ttf \
-    ca-certificates \
+    && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /etc/apt/trusted.gpg.d/google.gpg \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PORT=8080
@@ -26,4 +31,5 @@ RUN mkdir -p cache
 
 COPY --from=build /app/target/scribd-downloader-*.jar app.jar
 
-ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "app.jar"]
+# Limit Java heap to 350MB so that Chrome has enough headroom within Render 512MB RAM
+ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-Xmx350m", "-jar", "app.jar"]

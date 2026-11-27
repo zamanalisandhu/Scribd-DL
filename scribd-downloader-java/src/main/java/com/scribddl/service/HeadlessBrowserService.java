@@ -8,8 +8,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,14 +29,36 @@ public class HeadlessBrowserService {
     public HeadlessBrowserService() {
         this.browserPath = detectBrowserExecutable();
         if (browserPath != null) {
-            log.info("Headless browser detected: {}", browserPath);
+            log.info("Headless browser detected and verified: {}", browserPath);
         } else {
-            log.warn("No headless Chrome/Edge detected. Headless PDF generation fallback will be skipped.");
+            log.warn("No functional headless Chrome/Edge detected. Headless PDF generation fallback will be skipped.");
         }
     }
 
     public boolean isAvailable() {
         return browserPath != null;
+    }
+
+    public String getBrowserPath() {
+        return browserPath;
+    }
+
+    public String testBrowserVersion() {
+        if (browserPath == null) return "Browser not detected";
+        try {
+            Process process = new ProcessBuilder(browserPath, "--version").redirectErrorStream(true).start();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = r.readLine()) != null) {
+                    sb.append(line).append(" ");
+                }
+                process.waitFor(5, TimeUnit.SECONDS);
+                return sb.toString().trim() + " (exitCode=" + process.exitValue() + ")";
+            }
+        } catch (Exception e) {
+            return "Execution error: " + e.getMessage();
+        }
     }
 
     public byte[] renderHtmlToPdf(String htmlContent, String docId, int expectedPageCount) {
@@ -60,10 +84,13 @@ public class HeadlessBrowserService {
                     browserPath,
                     "--headless=new",
                     "--no-sandbox",
+                    "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
+                    "--disable-software-rasterizer",
                     "--disable-web-security",
                     "--allow-running-insecure-content",
+                    "--allow-file-access-from-files",
                     "--run-all-compositor-stages-before-draw",
                     "--virtual-time-budget=" + virtualBudgetMs,
                     "--no-pdf-header-footer",
@@ -75,10 +102,32 @@ public class HeadlessBrowserService {
             pb.redirectErrorStream(true);
             Process process = pb.start();
 
+            // Asynchronously drain stdout/stderr so the OS pipe buffer never blocks the process
+            StringBuilder logOutput = new StringBuilder();
+            Thread drainThread = new Thread(() -> {
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        if (logOutput.length() < 8000) {
+                            logOutput.append(line).append("\n");
+                        }
+                    }
+                } catch (Exception ignored) {}
+            });
+            drainThread.setDaemon(true);
+            drainThread.start();
+
             boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
             if (!finished) {
                 process.destroyForcibly();
-                log.warn("Headless browser timed out after {} seconds for doc {}", timeoutSeconds, docId);
+                log.warn("Headless browser timed out after {} seconds for doc {}. Process logs: {}", timeoutSeconds, docId, logOutput);
+                return null;
+            }
+            drainThread.join(1000);
+
+            int exitCode = process.exitValue();
+            if (exitCode != 0) {
+                log.warn("Headless browser exited with error code {} for doc {}. Logs: {}", exitCode, docId, logOutput);
                 return null;
             }
 
@@ -133,11 +182,11 @@ public class HeadlessBrowserService {
 
     private String detectBrowserExecutable() {
         List<String> candidates = Arrays.asList(
-                // Linux / Docker
+                // Linux / Docker - prioritize official Google Chrome Stable
+                "/usr/bin/google-chrome-stable",
+                "/usr/bin/google-chrome",
                 "/usr/bin/chromium",
                 "/usr/bin/chromium-browser",
-                "/usr/bin/google-chrome",
-                "/usr/bin/google-chrome-stable",
                 // Windows
                 "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
                 "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
@@ -146,18 +195,38 @@ public class HeadlessBrowserService {
         );
 
         for (String c : candidates) {
-            if (new File(c).exists()) {
-                return c;
+            File f = new File(c);
+            if (f.exists() && f.canExecute()) {
+                if (verifyBinary(c)) {
+                    return c;
+                }
             }
         }
 
-        for (String name : Arrays.asList("chromium", "chromium-browser", "google-chrome", "chrome", "msedge", "chrome.exe", "msedge.exe")) {
+        for (String name : Arrays.asList("google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "chrome", "msedge", "chrome.exe", "msedge.exe")) {
             String path = findInPath(name);
-            if (path != null) {
+            if (path != null && verifyBinary(path)) {
                 return path;
             }
         }
         return null;
+    }
+
+    private boolean verifyBinary(String binaryPath) {
+        try {
+            Process process = new ProcessBuilder(binaryPath, "--version").redirectErrorStream(true).start();
+            boolean finished = process.waitFor(5, TimeUnit.SECONDS);
+            if (finished && process.exitValue() == 0) {
+                return true;
+            } else {
+                process.destroyForcibly();
+                log.warn("Binary test failed for {} with exit code {}", binaryPath, finished ? process.exitValue() : "timeout");
+                return false;
+            }
+        } catch (Exception e) {
+            log.warn("Binary verification exception for {}: {}", binaryPath, e.getMessage());
+            return false;
+        }
     }
 
     private String findInPath(String binaryName) {

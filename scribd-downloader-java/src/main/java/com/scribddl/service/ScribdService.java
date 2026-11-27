@@ -5,12 +5,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.scribddl.model.DocInfo;
 import com.scribddl.model.PageItem;
 import com.scribddl.model.ProgressInfo;
+import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.graphics.image.JPEGFactory;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -281,10 +283,28 @@ public class ScribdService {
         String safeTitle = docInfo.getSafeTitle();
         String title = docInfo.getTitle();
 
-        // Fast Cache Hit Check
+        // Fast Cache Hit Check (with validation to auto-invalidate stale/blank text runs)
         if ((cookieStr == null || cookieStr.isBlank()) && cachedFile.exists() && cachedFile.length() > 1000) {
-            updateProgress(docId, "complete", pageCount, pageCount, 100, "Instant cache hit (" + pageCount + " pages)!");
-            return cachedFile;
+            boolean validCache = true;
+            if ("pdf".equals(fmt)) {
+                try (PDDocument checkDoc = Loader.loadPDF(cachedFile)) {
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    String txt = stripper.getText(checkDoc).trim();
+                    // If cached PDF has 0 text while the document has extracted text, invalidate stale cache
+                    if (txt.isEmpty() && docInfo.getExtractedLines() != null && !docInfo.getExtractedLines().isEmpty()) {
+                        log.info("Invalidating stale/blank-text cached PDF for doc {}", docId);
+                        validCache = false;
+                        cachedFile.delete();
+                    }
+                } catch (Exception e) {
+                    validCache = false;
+                    cachedFile.delete();
+                }
+            }
+            if (validCache) {
+                updateProgress(docId, "complete", pageCount, pageCount, 100, "Instant cache hit (" + pageCount + " pages)!");
+                return cachedFile;
+            }
         }
 
         updateProgress(docId, "starting", 0, pageCount, 5, "Analyzing document structure (" + pageCount + " pages)...");
