@@ -76,9 +76,9 @@ public class HeadlessBrowserService {
 
             String fileUrl = tempHtml.toUri().toString();
 
-            // Dynamic timeout scaling: minimum 45s, up to 120s
-            long timeoutSeconds = Math.min(120, Math.max(45, (long) (expectedPageCount * 2.5)));
-            long virtualBudgetMs = Math.min(35000, Math.max(15000, expectedPageCount * 1000));
+            // Fast, bounded timeout scaling: minimum 25s, up to 60s
+            long timeoutSeconds = Math.min(60, Math.max(25, (long) (expectedPageCount * 1.5)));
+            long virtualBudgetMs = Math.min(10000, Math.max(3500, expectedPageCount * 400));
 
             List<String> command = new ArrayList<>(Arrays.asList(
                     browserPath,
