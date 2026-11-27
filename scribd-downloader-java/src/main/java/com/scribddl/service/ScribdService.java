@@ -47,7 +47,7 @@ public class ScribdService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final HeadlessBrowserService headlessBrowserService;
     private final HttpClient httpClient;
-    private final ExecutorService downloadExecutor = Executors.newFixedThreadPool(24);
+    private final ExecutorService downloadExecutor = Executors.newFixedThreadPool(4);
 
     private final Map<String, DocInfo> metaCache = new ConcurrentHashMap<>();
     private final Map<String, ProgressInfo> progressTracker = new ConcurrentHashMap<>();

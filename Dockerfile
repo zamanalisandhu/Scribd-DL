@@ -31,5 +31,5 @@ RUN mkdir -p cache
 
 COPY --from=build /app/target/scribd-downloader-*.jar app.jar
 
-# Limit Java heap to 350MB so that Chrome has enough headroom within Render 512MB RAM
-ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-Xmx350m", "-jar", "app.jar"]
+# Limit Java memory to ~180MB with SerialGC so that Chrome has 300MB+ headroom within Render 512MB RAM
+ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-Xms64m", "-Xmx180m", "-XX:+UseSerialGC", "-XX:MaxMetaspaceSize=80m", "-Xss256k", "-jar", "app.jar"]
