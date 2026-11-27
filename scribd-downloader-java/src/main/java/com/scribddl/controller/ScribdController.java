@@ -51,6 +51,36 @@ public class ScribdController {
         } catch (Exception e) {
             map.put("test_render_error", e.getMessage());
         }
+        map.put("last_browser_execution", headlessBrowserService.getLastExecutionLog());
+        return ResponseEntity.ok(map);
+    }
+
+    @GetMapping("/api/debug-render")
+    public ResponseEntity<Map<String, Object>> debugRender(@RequestParam("doc_id") String docId) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("doc_id", docId);
+        try {
+            DocInfo docInfo = scribdService.extractDocInfo("https://www.scribd.com/document/" + docId + "/", null);
+            map.put("title", docInfo.getTitle());
+            map.put("page_count", docInfo.getPageCount());
+            map.put("asset_key", docInfo.getAssetKey());
+
+            long t0 = System.currentTimeMillis();
+            String embedHtml = scribdService.fetchAndPrepareEmbedHtml(docId, null, docInfo.getAssetKey());
+            map.put("fetch_embed_ms", System.currentTimeMillis() - t0);
+            map.put("embed_html_len", embedHtml != null ? embedHtml.length() : 0);
+
+            if (embedHtml != null) {
+                long t1 = System.currentTimeMillis();
+                byte[] pdf = headlessBrowserService.renderHtmlToPdf(embedHtml, docId, docInfo.getPageCount());
+                map.put("render_ms", System.currentTimeMillis() - t1);
+                map.put("pdf_bytes", pdf != null ? pdf.length : 0);
+                map.put("render_success", pdf != null);
+            }
+            map.put("last_browser_execution", headlessBrowserService.getLastExecutionLog());
+        } catch (Exception e) {
+            map.put("error", e.getMessage());
+        }
         return ResponseEntity.ok(map);
     }
 

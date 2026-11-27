@@ -25,6 +25,11 @@ public class HeadlessBrowserService {
     private static final Logger log = LoggerFactory.getLogger(HeadlessBrowserService.class);
 
     private final String browserPath;
+    private volatile String lastExecutionLog = "none";
+
+    public String getLastExecutionLog() {
+        return lastExecutionLog;
+    }
 
     public HeadlessBrowserService() {
         this.browserPath = detectBrowserExecutable();
@@ -68,9 +73,11 @@ public class HeadlessBrowserService {
 
         Path tempHtml = null;
         Path tempPdf = null;
+        Path tempProfile = null;
         try {
             tempHtml = Files.createTempFile("scribd_" + docId + "_", ".html");
             tempPdf = Files.createTempFile("scribd_" + docId + "_raw_", ".pdf");
+            tempProfile = Files.createTempDirectory("chrome_profile_");
 
             Files.writeString(tempHtml, htmlContent, StandardCharsets.UTF_8);
 
@@ -98,6 +105,7 @@ public class HeadlessBrowserService {
                     "--disable-web-security",
                     "--allow-running-insecure-content",
                     "--allow-file-access-from-files",
+                    "--user-data-dir=" + tempProfile.toAbsolutePath().toString(),
                     "--run-all-compositor-stages-before-draw",
                     "--virtual-time-budget=" + virtualBudgetMs,
                     "--no-pdf-header-footer",
@@ -127,14 +135,16 @@ public class HeadlessBrowserService {
             boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
             if (!finished) {
                 process.destroyForcibly();
-                log.warn("Headless browser timed out after {} seconds for doc {}. Process logs: {}", timeoutSeconds, docId, logOutput);
+                lastExecutionLog = "TIMEOUT: Doc " + docId + " timed out after " + timeoutSeconds + "s. Chrome logs: " + logOutput;
+                log.warn(lastExecutionLog);
                 return null;
             }
             drainThread.join(1000);
 
             int exitCode = process.exitValue();
             if (exitCode != 0) {
-                log.warn("Headless browser exited with error code {} for doc {}. Logs: {}", exitCode, docId, logOutput);
+                lastExecutionLog = "ERROR_EXIT: Doc " + docId + " exited with code " + exitCode + ". Chrome logs: " + logOutput;
+                log.warn(lastExecutionLog);
                 return null;
             }
 
@@ -145,8 +155,8 @@ public class HeadlessBrowserService {
 
                     // Validation: Page Count
                     if (expectedPageCount > 3 && actualPages < (expectedPageCount * 0.7)) {
-                        log.info("Headless embed rendered only {}/{} pages for doc {}. Triggering auto-fallback.",
-                                actualPages, expectedPageCount, docId);
+                        lastExecutionLog = "PAGE_COUNT_MISMATCH: Doc " + docId + " rendered " + actualPages + "/" + expectedPageCount + " pages. Chrome logs: " + logOutput;
+                        log.info(lastExecutionLog);
                         return null;
                     }
 
@@ -166,22 +176,33 @@ public class HeadlessBrowserService {
                     }
 
                     if (!hasContent) {
-                        log.warn("Headless rendered blank PDF without text or images for doc {}. Triggering auto-fallback.", docId);
+                        lastExecutionLog = "BLANK_PDF: Doc " + docId + " rendered blank PDF without text or images. Chrome logs: " + logOutput;
+                        log.warn(lastExecutionLog);
                         return null;
                     }
 
-                    log.info("Headless render validated: {} pages rendered with rich content for doc {}", actualPages, docId);
+                    lastExecutionLog = "SUCCESS: Doc " + docId + " rendered " + actualPages + " pages, size " + pdfFile.length() + " bytes, textLen=" + fullText.length();
+                    log.info(lastExecutionLog);
                 }
                 return Files.readAllBytes(tempPdf);
+            } else {
+                lastExecutionLog = "NO_PDF: Doc " + docId + " temp PDF file missing or <1000 bytes. Chrome logs: " + logOutput;
+                return null;
             }
         } catch (Exception e) {
-            log.error("Failed to render PDF via headless browser for doc {}: {}", docId, e.getMessage());
+            lastExecutionLog = "EXCEPTION: Doc " + docId + " failed with " + e.getClass().getName() + ": " + e.getMessage();
+            log.error(lastExecutionLog, e);
         } finally {
             if (tempHtml != null) {
                 try { Files.deleteIfExists(tempHtml); } catch (IOException ignored) {}
             }
             if (tempPdf != null) {
                 try { Files.deleteIfExists(tempPdf); } catch (IOException ignored) {}
+            }
+            if (tempProfile != null) {
+                try (var s = Files.walk(tempProfile)) {
+                    s.sorted(java.util.Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+                } catch (Exception ignored) {}
             }
         }
         return null;

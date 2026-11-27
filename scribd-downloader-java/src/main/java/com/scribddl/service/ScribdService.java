@@ -535,7 +535,7 @@ public class ScribdService {
         }
     }
 
-    private String fetchAndPrepareEmbedHtml(String docId, String cookie, String initialAssetKey) {
+    public String fetchAndPrepareEmbedHtml(String docId, String cookie, String initialAssetKey) {
         try {
             String embedUrl = "https://www.scribd.com/embeds/" + docId + "/content";
             HttpRequest req = buildRequest(embedUrl, cookie, Duration.ofSeconds(12));
