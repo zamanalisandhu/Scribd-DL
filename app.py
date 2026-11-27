@@ -529,11 +529,27 @@ def download_scribd_document(
         if fmt == 'pdf' and page_count > 3:
             try:
                 r = pypdf.PdfReader(cache_filepath)
+                # Ensure page count matches expected count
                 if len(r.pages) < page_count * 0.8:
                     is_cache_valid = False
                     os.remove(cache_filepath)
+                else:
+                    # Guard against blank pages in cached PDFs
+                    # Check if pages beyond page 3 have content (text or images)
+                    has_later_content = False
+                    for p in r.pages[3:]:
+                        if len(p.extract_text().strip()) > 10 or len(p.images) > 0:
+                            has_later_content = True
+                            break
+                    if not has_later_content and len(r.pages) > 3:
+                        is_cache_valid = False
+                        os.remove(cache_filepath)
             except Exception:
                 is_cache_valid = False
+                try:
+                    os.remove(cache_filepath)
+                except Exception:
+                    pass
 
         if is_cache_valid:
             PROGRESS_TRACKER[doc_id] = {
