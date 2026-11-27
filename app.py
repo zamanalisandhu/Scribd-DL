@@ -850,6 +850,15 @@ def download_scribd_document(
     raise HTTPException(status_code=500, detail="Could not assemble document pages")
 
 
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+def catch_all_frontend(full_path: str):
+    index_file = os.path.join(DIRECTORY, "index.html")
+    if os.path.exists(index_file):
+        with open(index_file, "r", encoding="utf-8") as f:
+            return f.read()
+    return "<h1>ScribdDL Pro is Running</h1>"
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
