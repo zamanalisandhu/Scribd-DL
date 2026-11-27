@@ -76,9 +76,9 @@ public class HeadlessBrowserService {
 
             String fileUrl = tempHtml.toUri().toString();
 
-            // Dynamic timeout scaling: minimum 35s, up to 180s for huge documents
-            long timeoutSeconds = Math.min(180, Math.max(35, (long) (expectedPageCount * 1.5)));
-            long virtualBudgetMs = Math.min(25000, Math.max(8000, expectedPageCount * 600));
+            // Dynamic timeout scaling: minimum 45s, up to 120s
+            long timeoutSeconds = Math.min(120, Math.max(45, (long) (expectedPageCount * 2.5)));
+            long virtualBudgetMs = Math.min(35000, Math.max(15000, expectedPageCount * 1000));
 
             List<String> command = new ArrayList<>(Arrays.asList(
                     browserPath,
@@ -88,9 +88,6 @@ public class HeadlessBrowserService {
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
                     "--disable-software-rasterizer",
-                    "--no-zygote",
-                    "--single-process",
-                    "--renderer-process-limit=1",
                     "--disable-extensions",
                     "--disable-background-networking",
                     "--disable-default-apps",
@@ -98,7 +95,6 @@ public class HeadlessBrowserService {
                     "--disable-translate",
                     "--metrics-recording-only",
                     "--no-first-run",
-                    "--js-flags=--max-old-space-size=64",
                     "--disable-web-security",
                     "--allow-running-insecure-content",
                     "--allow-file-access-from-files",

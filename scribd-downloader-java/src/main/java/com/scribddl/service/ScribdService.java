@@ -378,72 +378,59 @@ public class ScribdService {
             log.info("Headless rendering unavailable or incomplete for doc {}. Seamlessly activating High-Res Image Stitcher.", docId);
         }
 
-        // 5. PDF TIER 2: High-Resolution Parallel Image Stitcher (with Sprite Splitting & Alpha Normalization)
+        // 5. PDF TIER 2: Memory-Safe Streaming Image Stitcher (with Sprite Splitting & Alpha Normalization)
         List<PageItem> pageImages = docInfo.getPageImages();
         String assetKey = docInfo.getAssetKey();
         if (pageImages != null && !pageImages.isEmpty() && assetKey != null) {
             int totalImgs = pageImages.size();
-            updateProgress(docId, "downloading", 0, totalImgs, 10, "Starting 24-thread parallel download (0/" + totalImgs + ")...");
+            updateProgress(docId, "downloading", 0, totalImgs, 10, "Starting streaming image assembly (0/" + totalImgs + ")...");
 
-            Map<Integer, BufferedImage> downloadedImages = new ConcurrentHashMap<>();
-            List<CompletableFuture<Void>> futures = new ArrayList<>();
-            java.util.concurrent.atomic.AtomicInteger completedCount = new java.util.concurrent.atomic.AtomicInteger(0);
-
-            for (PageItem item : pageImages) {
-                CompletableFuture<Void> fut = CompletableFuture.runAsync(() -> {
+            try (PDDocument document = new PDDocument()) {
+                int processed = 0;
+                for (PageItem item : pageImages) {
                     BufferedImage img = downloadPageImage(item, assetKey, effectiveCookie);
                     if (img != null) {
-                        downloadedImages.put(item.getPage(), img);
-                    }
-                    int c = completedCount.incrementAndGet();
-                    int pct = Math.min(92, 10 + (int) ((c / (double) totalImgs) * 82));
-                    updateProgress(docId, "downloading", c, totalImgs, pct, "Downloaded page " + c + " of " + totalImgs + " (" + pct + "%)");
-                }, downloadExecutor);
-                futures.add(fut);
-            }
+                        int iw = img.getWidth();
+                        int ih = img.getHeight();
 
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-            if (!downloadedImages.isEmpty() && downloadedImages.size() >= Math.max(1, (int) (pageCount * 0.5))) {
-                updateProgress(docId, "assembling", totalImgs, totalImgs, 95, "Assembling " + downloadedImages.size() + " pages into authentic PDF...");
-
-                List<Integer> sortedPages = new ArrayList<>(downloadedImages.keySet());
-                Collections.sort(sortedPages);
-
-                try (PDDocument document = new PDDocument()) {
-                    for (int pNum : sortedPages) {
-                        BufferedImage originalImg = downloadedImages.get(pNum);
-                        int iw = originalImg.getWidth();
-                        int ih = originalImg.getHeight();
-
-                        // Automatically split 2-slide sprites or continuous captures into separate pages
                         if (ih > iw * 1.8) {
                             int pageH = (int) (iw * 1.414);
                             if (ih >= iw * 2.5) {
                                 int y = 0;
                                 while (y < ih) {
                                     int currentSliceHeight = Math.min(pageH, ih - y);
-                                    BufferedImage slice = originalImg.getSubimage(0, y, iw, currentSliceHeight);
+                                    BufferedImage slice = img.getSubimage(0, y, iw, currentSliceHeight);
                                     addImagePageToPdf(document, slice);
+                                    slice.flush();
                                     y += pageH;
                                 }
                             } else {
                                 int h2 = ih / 2;
-                                BufferedImage slice1 = originalImg.getSubimage(0, 0, iw, h2);
-                                BufferedImage slice2 = originalImg.getSubimage(0, h2, iw, ih - h2);
+                                BufferedImage slice1 = img.getSubimage(0, 0, iw, h2);
+                                BufferedImage slice2 = img.getSubimage(0, h2, iw, ih - h2);
                                 addImagePageToPdf(document, slice1);
                                 addImagePageToPdf(document, slice2);
+                                slice1.flush();
+                                slice2.flush();
                             }
                         } else {
-                            addImagePageToPdf(document, originalImg);
+                            addImagePageToPdf(document, img);
                         }
+                        img.flush();
+                        processed++;
+                        int pct = Math.min(95, 10 + (int) ((processed / (double) totalImgs) * 85));
+                        updateProgress(docId, "downloading", processed, totalImgs, pct, "Processed slide " + processed + " of " + totalImgs);
                     }
+                }
 
+                if (document.getNumberOfPages() > 0) {
                     document.save(cachedFile);
                     updateProgress(docId, "complete", document.getNumberOfPages(), document.getNumberOfPages(), 100,
                             "Complete " + document.getNumberOfPages() + "-page PDF ready!");
                     return cachedFile;
                 }
+            } catch (Exception e) {
+                log.error("Streaming image assembly failed for doc {}: {}", docId, e.getMessage());
             }
         }
 
