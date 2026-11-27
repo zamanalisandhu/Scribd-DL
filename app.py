@@ -437,8 +437,8 @@ def extract_scribd_doc_info(target_url: str, cookie_str: Optional[str] = None):
 
                 if len(pages_dict) >= total_page_count and len(pages_dict) > 1:
                     break
-        except Exception:
-            pass
+        except Exception as fetch_err:
+            print(f"[WARN] Fetch failed for {fetch_url}: {fetch_err}")
 
     asset_key = list(asset_keys)[0] if asset_keys else None
 

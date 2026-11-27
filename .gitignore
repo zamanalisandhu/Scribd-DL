@@ -8,3 +8,10 @@ venv/
 .venv/
 .idea/
 .vscode/
+target/
+**/target/
+*.jar
+*.war
+*.pdf
+run_java.bat
+
