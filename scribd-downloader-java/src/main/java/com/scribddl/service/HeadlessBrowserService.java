@@ -83,8 +83,8 @@ public class HeadlessBrowserService {
 
             String fileUrl = tempHtml.toUri().toString();
 
-            // Cloud bounded timeout: minimum 45s, up to 120s
-            long timeoutSeconds = Math.min(120, Math.max(45, (long) (expectedPageCount * 1.5)));
+            // Cloud bounded timeout: minimum 90s, up to 120s
+            long timeoutSeconds = Math.min(120, Math.max(90, (long) (expectedPageCount * 3.0)));
 
             List<String> command = new ArrayList<>(Arrays.asList(
                     browserPath,
@@ -118,6 +118,7 @@ public class HeadlessBrowserService {
             ));
 
             ProcessBuilder pb = new ProcessBuilder(command);
+            pb.environment().put("DBUS_SESSION_BUS_ADDRESS", "/dev/null");
             pb.redirectErrorStream(true);
             Process process = pb.start();
 

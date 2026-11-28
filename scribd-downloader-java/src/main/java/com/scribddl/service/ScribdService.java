@@ -367,15 +367,16 @@ public class ScribdService {
         // 4. PDF TIER 1: Authentic Headless Browser Rendering with Chunking (1:1 Vector PDF for presentations and books up to 250 pages)
         if (pageCount <= 250 && headlessBrowserService.isAvailable()) {
             updateProgress(docId, "rendering", 0, pageCount, 15, "Preparing 1:1 vector layout (" + pageCount + " pages)...");
-            List<String> htmlChunks = fetchAndPrepareEmbedHtmlChunks(docId, effectiveCookie, docInfo.getAssetKey(), pageCount, 25);
+            int chunkSize = 20;
+            List<String> htmlChunks = fetchAndPrepareEmbedHtmlChunks(docId, effectiveCookie, docInfo.getAssetKey(), pageCount, chunkSize);
             if (htmlChunks != null && !htmlChunks.isEmpty()) {
                 List<byte[]> partPdfs = new ArrayList<>();
                 boolean allSucceeded = true;
                 int totalChunks = htmlChunks.size();
 
                 for (int c = 0; c < totalChunks; c++) {
-                    int startP = c * 25 + 1;
-                    int endP = Math.min(pageCount, (c + 1) * 25);
+                    int startP = c * chunkSize + 1;
+                    int endP = Math.min(pageCount, (c + 1) * chunkSize);
                     int chunkPages = endP - startP + 1;
                     int pct = 20 + (int) (((c + 1) / (double) totalChunks) * 75);
                     updateProgress(docId, "rendering", endP, pageCount, pct, "Rendering vector pages " + endP + "/" + pageCount + "...");
