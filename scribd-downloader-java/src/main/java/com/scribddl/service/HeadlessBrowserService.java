@@ -89,8 +89,6 @@ public class HeadlessBrowserService {
             List<String> command = new ArrayList<>(Arrays.asList(
                     browserPath,
                     "--headless=new",
-                    "--single-process",
-                    "--no-zygote",
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
@@ -120,7 +118,6 @@ public class HeadlessBrowserService {
             ));
 
             ProcessBuilder pb = new ProcessBuilder(command);
-            pb.environment().put("DBUS_SESSION_BUS_ADDRESS", "/dev/null");
             pb.redirectErrorStream(true);
             Process process = pb.start();
 
