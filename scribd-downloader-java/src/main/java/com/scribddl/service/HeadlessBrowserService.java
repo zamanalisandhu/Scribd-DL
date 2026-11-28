@@ -89,6 +89,8 @@ public class HeadlessBrowserService {
             List<String> command = new ArrayList<>(Arrays.asList(
                     browserPath,
                     "--headless=new",
+                    "--single-process",
+                    "--no-zygote",
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",

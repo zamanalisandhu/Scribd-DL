@@ -52,6 +52,7 @@ public class ScribdService {
 
     private final Map<String, DocInfo> metaCache = new ConcurrentHashMap<>();
     private final Map<String, ProgressInfo> progressTracker = new ConcurrentHashMap<>();
+    private final Map<String, String> fontBase64Cache = new ConcurrentHashMap<>();
 
     @Value("${scribd.cache.dir:cache}")
     private String cacheDirPath;
@@ -769,22 +770,29 @@ public class ScribdService {
                 List<CompletableFuture<Void>> fontFuts = new ArrayList<>();
 
                 for (int fid : allFontIds) {
-                    fontFuts.add(CompletableFuture.runAsync(() -> {
-                        String fCode = String.format("%04d", fid);
-                        String fontUrl = "https://html.scribdassets.com/" + finalAssetKey + "/fonts/" + fCode + ".woff2";
-                        try {
-                            HttpRequest freq = buildRequest(fontUrl, cookie, Duration.ofSeconds(6));
-                            HttpResponse<byte[]> fresp = httpClient.send(freq, HttpResponse.BodyHandlers.ofByteArray());
-                            if (fresp.statusCode() == 200) {
-                                fontBase64Map.put(fid, Base64.getEncoder().encodeToString(fresp.body()));
-                            }
-                        } catch (Exception ignored) {}
-                    }, downloadExecutor));
+                    String cacheKey = finalAssetKey + "_" + fid;
+                    if (fontBase64Cache.containsKey(cacheKey)) {
+                        fontBase64Map.put(fid, fontBase64Cache.get(cacheKey));
+                    } else {
+                        fontFuts.add(CompletableFuture.runAsync(() -> {
+                            String fCode = String.format("%04d", fid);
+                            String fontUrl = "https://html.scribdassets.com/" + finalAssetKey + "/fonts/" + fCode + ".woff2";
+                            try {
+                                HttpRequest freq = buildRequest(fontUrl, cookie, Duration.ofSeconds(6));
+                                HttpResponse<byte[]> fresp = httpClient.send(freq, HttpResponse.BodyHandlers.ofByteArray());
+                                if (fresp.statusCode() == 200) {
+                                    String b64 = Base64.getEncoder().encodeToString(fresp.body());
+                                    fontBase64Map.put(fid, b64);
+                                    fontBase64Cache.put(cacheKey, b64);
+                                }
+                            } catch (Exception ignored) {}
+                        }, downloadExecutor));
+                    }
                 }
 
-                try {
-                    CompletableFuture.allOf(fontFuts.toArray(new CompletableFuture[0])).get(6, TimeUnit.SECONDS);
-                } catch (Exception ignored) {}
+                if (!fontFuts.isEmpty()) {
+                    CompletableFuture.allOf(fontFuts.toArray(new CompletableFuture[0])).join();
+                }
 
                 for (int fid : allFontIds) {
                     String b64 = fontBase64Map.get(fid);
