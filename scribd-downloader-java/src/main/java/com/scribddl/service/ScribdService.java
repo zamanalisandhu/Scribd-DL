@@ -712,18 +712,23 @@ public class ScribdService {
                 jsonpMap.put(Integer.parseInt(mJsonp.group(1)), mJsonp.group(2));
             }
 
-            // Inlined Cover image on page 1 as base64
+            // Inlined Cover image on page 1 as base64 (fast substring scan, zero regex backtracking)
             String coverBase64 = null;
-            Matcher mCover = Pattern.compile("id=[\"']outer_page_1[\"'][\\s\\S]*?orig=[\"'](https?://[^\"']+)[\"']").matcher(html);
-            if (mCover.find()) {
-                String coverUrl = mCover.group(1).replace("http://html.scribd.com", "https://html.scribdassets.com");
-                try {
-                    HttpRequest creq = buildRequest(coverUrl, cookie, Duration.ofSeconds(6));
-                    HttpResponse<byte[]> cresp = httpClient.send(creq, HttpResponse.BodyHandlers.ofByteArray());
-                    if (cresp.statusCode() == 200) {
-                        coverBase64 = "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(cresp.body());
-                    }
-                } catch (Exception ignored) {}
+            int p1Idx = html.indexOf("outer_page_1");
+            if (p1Idx != -1) {
+                int p1End = html.indexOf("outer_page_2", p1Idx);
+                String p1Snippet = (p1End != -1) ? html.substring(p1Idx, p1End) : html.substring(p1Idx, Math.min(html.length(), p1Idx + 4000));
+                Matcher mCover = Pattern.compile("orig=[\"'](https?://[^\"']+)[\"']").matcher(p1Snippet);
+                if (mCover.find()) {
+                    String coverUrl = mCover.group(1).replace("http://html.scribd.com", "https://html.scribdassets.com");
+                    try {
+                        HttpRequest creq = buildRequest(coverUrl, cookie, Duration.ofSeconds(6));
+                        HttpResponse<byte[]> cresp = httpClient.send(creq, HttpResponse.BodyHandlers.ofByteArray());
+                        if (cresp.statusCode() == 200) {
+                            coverBase64 = "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(cresp.body());
+                        }
+                    } catch (Exception ignored) {}
+                }
             }
 
             // Discover and declare only the embedded Scribd fonts actually used in the document
@@ -791,16 +796,14 @@ public class ScribdService {
             // Auto-detect native document dimensions
             int nativeW = 902;
             int nativeH = 1167;
-            Matcher dimMatcher = Pattern.compile("id=[\"']outer_page_1[\"'][^>]*style=[\"'][^\"']*width:\\s*(\\d+)px;\\s*height:\\s*(\\d+)px").matcher(html);
-            if (!dimMatcher.find()) {
-                dimMatcher = Pattern.compile("origWidth[:\\s]+(\\d+)[\\s,]+origHeight[:\\s]+(\\d+)").matcher(html);
-            }
-            if (!dimMatcher.find()) {
-                dimMatcher = Pattern.compile("width:\\s*(\\d+)px;\\s*height:\\s*(\\d+)px").matcher(html);
-            }
-            if (dimMatcher.find()) {
-                nativeW = Integer.parseInt(dimMatcher.group(1));
-                nativeH = Integer.parseInt(dimMatcher.group(2));
+            if (p1Idx != -1) {
+                int p1End = html.indexOf("outer_page_2", p1Idx);
+                String p1Snippet = (p1End != -1) ? html.substring(p1Idx, p1End) : html.substring(p1Idx, Math.min(html.length(), p1Idx + 4000));
+                Matcher dimMatcher = Pattern.compile("width:\\s*(\\d+)px;\\s*height:\\s*(\\d+)px").matcher(p1Snippet);
+                if (dimMatcher.find()) {
+                    nativeW = Integer.parseInt(dimMatcher.group(1));
+                    nativeH = Integer.parseInt(dimMatcher.group(2));
+                }
             }
 
             int docW = nativeW;
