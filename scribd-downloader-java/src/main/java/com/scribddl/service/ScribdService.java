@@ -365,25 +365,39 @@ public class ScribdService {
             return cachedFile;
         }
 
-        // 4. PDF TIER 1: Authentic Headless Browser Rendering with Chunking (1:1 Vector PDF for presentations and books up to 250 pages)
+        // 4. PDF TIER 1: Authentic Headless Browser Rendering with On-Demand Chunking (1:1 Vector PDF)
         if (pageCount <= 250 && headlessBrowserService.isAvailable()) {
-            updateProgress(docId, "rendering", 0, pageCount, 15, "Preparing 1:1 vector layout (" + pageCount + " pages)...");
-            int chunkSize = (pageCount > 50) ? 10 : 20;
-            List<String> htmlChunks = fetchAndPrepareEmbedHtmlChunks(docId, effectiveCookie, docInfo.getAssetKey(), pageCount, chunkSize);
-            if (htmlChunks != null && !htmlChunks.isEmpty()) {
-                List<byte[]> partPdfs = new ArrayList<>();
+            updateProgress(docId, "rendering", 0, pageCount, 10, "Preparing 1:1 vector layout (" + pageCount + " pages)...");
+            EmbedDocumentSession session = prepareEmbedSession(docId, effectiveCookie, docInfo.getAssetKey(), pageCount);
+            if (session != null) {
+                int chunkSize = (pageCount > 50) ? 10 : 20;
+                int totalChunks = (int) Math.ceil((double) pageCount / chunkSize);
+                List<File> tempChunkPdfs = new ArrayList<>();
                 boolean allSucceeded = true;
-                int totalChunks = htmlChunks.size();
 
                 for (int c = 0; c < totalChunks; c++) {
                     int startP = c * chunkSize + 1;
                     int endP = Math.min(pageCount, (c + 1) * chunkSize);
                     int chunkPages = endP - startP + 1;
-                    int pct = 20 + (int) (((c + 1) / (double) totalChunks) * 75);
+                    int pct = 15 + (int) (((c + 1) / (double) totalChunks) * 80);
                     updateProgress(docId, "rendering", endP, pageCount, pct, "Rendering vector pages " + endP + "/" + pageCount + "...");
-                    byte[] chunkPdf = headlessBrowserService.renderHtmlToPdf(htmlChunks.get(c), docId + "_part" + (c + 1), chunkPages);
+
+                    String chunkHtml = buildChunkHtmlOnDemand(session, startP, endP);
+                    byte[] chunkPdf = (chunkHtml != null) ? headlessBrowserService.renderHtmlToPdf(chunkHtml, docId + "_part" + (c + 1), chunkPages) : null;
+                    chunkHtml = null; // Free memory immediately
+
                     if (chunkPdf != null && chunkPdf.length > 500) {
-                        partPdfs.add(chunkPdf);
+                        try {
+                            File tempPdf = File.createTempFile("scribd_chunk_" + docId + "_" + (c + 1) + "_", ".pdf");
+                            Files.write(tempPdf.toPath(), chunkPdf);
+                            tempChunkPdfs.add(tempPdf);
+                            chunkPdf = null; // Free memory immediately
+                            System.gc();
+                        } catch (IOException e) {
+                            log.warn("Failed to write chunk PDF to disk for doc {}: {}", docId, e.getMessage());
+                            allSucceeded = false;
+                            break;
+                        }
                     } else {
                         log.warn("Chunk {} failed for doc {}", c + 1, docId);
                         allSucceeded = false;
@@ -391,13 +405,15 @@ public class ScribdService {
                     }
                 }
 
-                if (allSucceeded && !partPdfs.isEmpty()) {
+                if (allSucceeded && !tempChunkPdfs.isEmpty()) {
                     try (PDDocument mergedDoc = new PDDocument()) {
-                        for (byte[] partBytes : partPdfs) {
-                            try (PDDocument partDoc = Loader.loadPDF(partBytes)) {
+                        for (File chunkFile : tempChunkPdfs) {
+                            try (PDDocument partDoc = Loader.loadPDF(chunkFile)) {
                                 for (PDPage p : partDoc.getPages()) {
                                     mergedDoc.importPage(p);
                                 }
+                            } finally {
+                                try { chunkFile.delete(); } catch (Exception ignored) {}
                             }
                         }
                         mergedDoc.save(cachedFile);
@@ -405,6 +421,10 @@ public class ScribdService {
                         return cachedFile;
                     } catch (Exception e) {
                         log.warn("Failed to merge PDF chunks for doc {}: {}", docId, e.getMessage());
+                    } finally {
+                        for (File f : tempChunkPdfs) {
+                            try { f.delete(); } catch (Exception ignored) {}
+                        }
                     }
                 }
             }
@@ -633,12 +653,38 @@ public class ScribdService {
         }
     }
 
-    public String fetchAndPrepareEmbedHtml(String docId, String cookie, String initialAssetKey) {
-        List<String> chunks = fetchAndPrepareEmbedHtmlChunks(docId, cookie, initialAssetKey, 25, 25);
-        return (chunks != null && !chunks.isEmpty()) ? chunks.get(0) : null;
+    public static class EmbedDocumentSession {
+        public final String docId;
+        public final String assetKey;
+        public final String cookie;
+        public final String headPart;
+        public final String footPart;
+        public final Map<Integer, String> pageShells;
+        public final Map<Integer, String> jsonpMap;
+        public final String coverBase64;
+        public final int totalPages;
+
+        public EmbedDocumentSession(String docId, String assetKey, String cookie, String headPart, String footPart,
+                                    Map<Integer, String> pageShells, Map<Integer, String> jsonpMap,
+                                    String coverBase64, int totalPages) {
+            this.docId = docId;
+            this.assetKey = assetKey;
+            this.cookie = cookie;
+            this.headPart = headPart;
+            this.footPart = footPart;
+            this.pageShells = pageShells;
+            this.jsonpMap = jsonpMap;
+            this.coverBase64 = coverBase64;
+            this.totalPages = totalPages;
+        }
     }
 
-    public List<String> fetchAndPrepareEmbedHtmlChunks(String docId, String cookie, String initialAssetKey, int totalPages, int chunkSize) {
+    public String fetchAndPrepareEmbedHtml(String docId, String cookie, String initialAssetKey) {
+        EmbedDocumentSession session = prepareEmbedSession(docId, cookie, initialAssetKey, 20);
+        return (session != null) ? buildChunkHtmlOnDemand(session, 1, Math.min(20, session.totalPages)) : null;
+    }
+
+    public EmbedDocumentSession prepareEmbedSession(String docId, String cookie, String initialAssetKey, int totalPages) {
         try {
             String embedUrl = "https://www.scribd.com/embeds/" + docId + "/content";
             HttpRequest req = buildRequest(embedUrl, cookie, Duration.ofSeconds(12));
@@ -659,110 +705,34 @@ public class ScribdService {
                 }
             }
 
-            // Discover and fetch all lazy-loaded JSONP page chunks
-            List<String[]> jsonpMatches = new ArrayList<>();
+            // Map all lazy-loaded JSONP page chunks (pageNum -> hash)
+            Map<Integer, String> jsonpMap = new HashMap<>();
             Matcher mJsonp = Pattern.compile("pages/(\\d+)-([a-zA-Z0-9]+)\\.jsonp").matcher(html);
             while (mJsonp.find()) {
-                jsonpMatches.add(new String[]{mJsonp.group(1), mJsonp.group(2)});
+                jsonpMap.put(Integer.parseInt(mJsonp.group(1)), mJsonp.group(2));
             }
 
-            if (assetKey != null && !jsonpMatches.isEmpty()) {
-                final String finalAssetKey = assetKey;
-                Map<Integer, String> jsonpPageContents = new ConcurrentHashMap<>();
-                List<CompletableFuture<Void>> futs = new ArrayList<>();
-
-                for (String[] pair : jsonpMatches) {
-                    final int pageNum = Integer.parseInt(pair[0]);
-                    final String hashVal = pair[1];
-
-                    CompletableFuture<Void> cf = CompletableFuture.runAsync(() -> {
-                        for (String domain : Arrays.asList("html.scribdassets.com", "html.scribd.com")) {
-                            for (int attempt = 0; attempt < 2; attempt++) {
-                                try {
-                                    String u = "https://" + domain + "/" + finalAssetKey + "/pages/" + pageNum + "-" + hashVal + ".jsonp";
-                                    HttpRequest jreq = buildRequest(u, cookie, Duration.ofSeconds(9));
-                                    HttpResponse<byte[]> jresp = httpClient.send(jreq, HttpResponse.BodyHandlers.ofByteArray());
-                                    if (jresp.statusCode() == 200) {
-                                        byte[] raw = jresp.body();
-                                        String dec;
-                                        if (raw.length > 2 && (raw[0] & 0xFF) == 0x1f && (raw[1] & 0xFF) == 0x8b) {
-                                            try (GZIPInputStream gzin = new GZIPInputStream(new ByteArrayInputStream(raw))) {
-                                                dec = new String(gzin.readAllBytes(), StandardCharsets.UTF_8);
-                                            }
-                                        } else {
-                                            dec = new String(raw, StandardCharsets.UTF_8);
-                                        }
-
-                                        Matcher cbMatcher = Pattern.compile("window\\.page\\d+_callback\\(\\s*(\\[[\\s\\S]*\\])\\s*\\)").matcher(dec);
-                                        if (cbMatcher.find()) {
-                                            JsonNode arr = objectMapper.readTree(cbMatcher.group(1));
-                                            if (arr.isArray() && arr.size() > 0) {
-                                                jsonpPageContents.put(pageNum, arr.get(0).asText());
-                                                return;
-                                            }
-                                        }
-                                    }
-                                } catch (Exception ignored) {}
-                            }
-                        }
-                    }, downloadExecutor);
-                    futs.add(cf);
-                }
-
-                CompletableFuture.allOf(futs.toArray(new CompletableFuture[0])).join();
-
-                // Fast Single-Pass Linear Assembly into StringBuilder (Zero-Copy O(N))
-                StringBuilder assembled = new StringBuilder(html.length() + jsonpPageContents.size() * 3000);
-                int lastPos = 0;
-                Matcher outerMatcher = Pattern.compile("id=[\"']outer_page_(\\d+)[\"'][^>]*>").matcher(html);
-                while (outerMatcher.find()) {
-                    int tagEnd = outerMatcher.end();
-                    assembled.append(html, lastPos, tagEnd);
-                    int pageNum = Integer.parseInt(outerMatcher.group(1));
-                    String pContent = jsonpPageContents.get(pageNum);
-                    if (pContent != null) {
-                        assembled.append("\n").append(pContent).append("\n");
+            // Inlined Cover image on page 1 as base64
+            String coverBase64 = null;
+            Matcher mCover = Pattern.compile("id=[\"']outer_page_1[\"'][\\s\\S]*?orig=[\"'](https?://[^\"']+)[\"']").matcher(html);
+            if (mCover.find()) {
+                String coverUrl = mCover.group(1).replace("http://html.scribd.com", "https://html.scribdassets.com");
+                try {
+                    HttpRequest creq = buildRequest(coverUrl, cookie, Duration.ofSeconds(6));
+                    HttpResponse<byte[]> cresp = httpClient.send(creq, HttpResponse.BodyHandlers.ofByteArray());
+                    if (cresp.statusCode() == 200) {
+                        coverBase64 = "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(cresp.body());
                     }
-                    lastPos = tagEnd;
-                }
-                assembled.append(html, lastPos, html.length());
-                html = assembled.toString();
+                } catch (Exception ignored) {}
             }
 
-            // Universal Asset Normalization across the ENTIRE merged document
-            html = html.replace("http://html.scribd.com", "https://html.scribdassets.com");
-            html = html.replace("http://html.scribdassets.com", "https://html.scribdassets.com");
-            if (!jsonpMatches.isEmpty() && jsonpMatches.size() > 15) {
-                // Vector digital book: inline cover image on page 1 as base64, avoid 100+ blank white placeholder textures
-                Matcher mCover = Pattern.compile("id=[\"']outer_page_1[\"'][\\s\\S]*?orig=[\"'](https?://[^\"']+)[\"']").matcher(html);
-                if (mCover.find()) {
-                    String coverUrl = mCover.group(1);
-                    String coverSrc = coverUrl;
-                    try {
-                        HttpRequest creq = buildRequest(coverUrl, cookie, Duration.ofSeconds(6));
-                        HttpResponse<byte[]> cresp = httpClient.send(creq, HttpResponse.BodyHandlers.ofByteArray());
-                        if (cresp.statusCode() == 200) {
-                            coverSrc = "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(cresp.body());
-                        }
-                    } catch (Exception ignored) {}
-                    html = html.replaceFirst("orig=[\"']" + Pattern.quote(coverUrl) + "[\"']", "src=\"" + coverSrc + "\" orig=\"" + coverUrl + "\"");
-                }
-            } else {
-                // Presentation or graphic slides: enable all background images
-                html = html.replaceAll("orig=[\"'](https?://[^\"']+)[\"']", "src=\"$1\" orig=\"$1\"");
-                html = html.replaceAll("data-src=[\"'](https?://[^\"']+)[\"']", "src=\"$1\" data-src=\"$1\"");
-            }
-            html = html.replaceAll("opacity:\\s*0\\.01", "opacity: 1");
-            html = html.replaceAll("opacity:0\\.01", "opacity: 1");
-
-            // Discover and declare only the embedded Scribd fonts ACTUALLY used in the document
+            // Discover and declare only the embedded Scribd fonts actually used in the document
             Set<Integer> allFontIds = new TreeSet<>();
             Matcher ffMatcher = Pattern.compile("\\bff(\\d+)\\b").matcher(html);
             while (ffMatcher.find()) {
                 allFontIds.add(Integer.parseInt(ffMatcher.group(1)));
             }
 
-            // Inlining embedded fonts as base64 data URIs so Chrome renders 100% offline with zero network latency
             StringBuilder fontCss = new StringBuilder();
             if (assetKey != null && !allFontIds.isEmpty()) {
                 final String finalAssetKey = assetKey;
@@ -808,12 +778,15 @@ public class ScribdService {
                 }
             }
 
+            // Universal cleanup of external assets so Chrome renders 100% offline
             html = html.replaceAll("<script[\\s\\S]*?</script>", "");
             html = html.replaceAll("<iframe[\\s\\S]*?</iframe>", "");
             html = html.replaceAll("<iframe[^>]*>", "");
             html = html.replaceAll("<noscript[\\s\\S]*?</noscript>", "");
             html = html.replaceAll("<link[^>]*>", "");
             html = html.replaceAll("<meta[^>]*>", "");
+            html = html.replaceAll("opacity:\\s*0\\.01", "opacity: 1");
+            html = html.replaceAll("opacity:0\\.01", "opacity: 1");
 
             // Auto-detect native document dimensions
             int nativeW = 902;
@@ -907,27 +880,23 @@ public class ScribdService {
                     ".outer_page.blurred_page .text_layer { text-shadow: none !important; }\n" +
                     "</style>\n";
 
-            if (html.contains("</head>")) {
-                html = html.replace("</head>", printRules + "</head>");
-            } else {
-                html = printRules + html;
-            }
-
-            // If document fits within 1 chunk, return immediately
-            if (totalPages <= chunkSize) {
-                return Collections.singletonList(html);
-            }
-
-            // Slicing into lightweight chunk HTMLs
             int pContIdx = html.indexOf("class=\"outer_page_container\"");
-            if (pContIdx == -1) {
-                return Collections.singletonList(html);
+            if (pContIdx == -1) pContIdx = html.indexOf("outer_page_container");
+            int scrollerTagEnd = (pContIdx != -1) ? html.indexOf(">", pContIdx) : -1;
+            String headPart;
+            if (scrollerTagEnd != -1) {
+                headPart = html.substring(0, scrollerTagEnd + 1);
+            } else {
+                headPart = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body><div class=\"document_scroller\"><div class=\"outer_page_container\">";
             }
-            int scrollerTagEnd = html.indexOf(">", pContIdx);
-            String headPart = html.substring(0, scrollerTagEnd + 1);
+            if (headPart.contains("</head>")) {
+                headPart = headPart.replace("</head>", printRules + "</head>");
+            } else {
+                headPart = printRules + headPart;
+            }
             String footPart = "\n</div></div></div></div></body></html>";
 
-            Map<Integer, String> pageBlocks = new HashMap<>();
+            Map<Integer, String> pageShells = new HashMap<>();
             Matcher pMatcher = Pattern.compile("<div[^>]*id=[\"']outer_page_(\\d+)[\"'][^>]*>").matcher(html);
             List<int[]> blockIndices = new ArrayList<>();
             while (pMatcher.find()) {
@@ -939,25 +908,85 @@ public class ScribdService {
                 int startIdx = blockIndices.get(i)[1];
                 int endIdx = (i + 1 < blockIndices.size()) ? blockIndices.get(i + 1)[1] : html.lastIndexOf("</div>");
                 if (endIdx > startIdx) {
-                    pageBlocks.put(pn, html.substring(startIdx, endIdx));
+                    pageShells.put(pn, html.substring(startIdx, endIdx));
                 }
             }
 
-            List<String> chunks = new ArrayList<>();
-            for (int startP = 1; startP <= totalPages; startP += chunkSize) {
-                int endP = Math.min(totalPages, startP + chunkSize - 1);
-                StringBuilder chunkBody = new StringBuilder();
-                for (int p = startP; p <= endP; p++) {
-                    String pb = pageBlocks.get(p);
-                    if (pb != null) {
-                        chunkBody.append(pb);
-                    }
-                }
-                chunks.add(headPart + "\n" + chunkBody.toString() + footPart);
-            }
-            return chunks;
+            return new EmbedDocumentSession(docId, assetKey, cookie, headPart, footPart, pageShells, jsonpMap, coverBase64, totalPages);
         } catch (Exception e) {
-            log.warn("Failed to prepare embed HTML chunks for doc {}: {}", docId, e.getMessage());
+            log.warn("Failed to prepare embed session for doc {}: {}", docId, e.getMessage());
+            return null;
+        }
+    }
+
+    public String buildChunkHtmlOnDemand(EmbedDocumentSession session, int startP, int endP) {
+        try {
+            // 1. Fetch only the JSONP pages needed for this specific chunk (at most 10 pages)
+            Map<Integer, String> chunkJsonps = new ConcurrentHashMap<>();
+            List<CompletableFuture<Void>> futs = new ArrayList<>();
+
+            for (int p = startP; p <= endP; p++) {
+                final int pageNum = p;
+                final String hashVal = session.jsonpMap.get(p);
+                if (hashVal != null && session.assetKey != null) {
+                    futs.add(CompletableFuture.runAsync(() -> {
+                        for (String domain : Arrays.asList("html.scribdassets.com", "html.scribd.com")) {
+                            for (int attempt = 0; attempt < 2; attempt++) {
+                                try {
+                                    String u = "https://" + domain + "/" + session.assetKey + "/pages/" + pageNum + "-" + hashVal + ".jsonp";
+                                    HttpRequest jreq = buildRequest(u, session.cookie, Duration.ofSeconds(8));
+                                    HttpResponse<byte[]> jresp = httpClient.send(jreq, HttpResponse.BodyHandlers.ofByteArray());
+                                    if (jresp.statusCode() == 200) {
+                                        byte[] raw = jresp.body();
+                                        String dec;
+                                        if (raw.length > 2 && (raw[0] & 0xFF) == 0x1f && (raw[1] & 0xFF) == 0x8b) {
+                                            try (GZIPInputStream gzin = new GZIPInputStream(new ByteArrayInputStream(raw))) {
+                                                dec = new String(gzin.readAllBytes(), StandardCharsets.UTF_8);
+                                            }
+                                        } else {
+                                            dec = new String(raw, StandardCharsets.UTF_8);
+                                        }
+
+                                        Matcher cbMatcher = Pattern.compile("window\\.page\\d+_callback\\(\\s*(\\[[\\s\\S]*\\])\\s*\\)").matcher(dec);
+                                        if (cbMatcher.find()) {
+                                            JsonNode arr = objectMapper.readTree(cbMatcher.group(1));
+                                            if (arr.isArray() && arr.size() > 0) {
+                                                chunkJsonps.put(pageNum, arr.get(0).asText());
+                                                return;
+                                            }
+                                        }
+                                    }
+                                } catch (Exception ignored) {}
+                            }
+                        }
+                    }, downloadExecutor));
+                }
+            }
+
+            if (!futs.isEmpty()) {
+                CompletableFuture.allOf(futs.toArray(new CompletableFuture[0])).join();
+            }
+
+            // 2. Assemble ONLY the pages of this chunk
+            StringBuilder chunkBody = new StringBuilder();
+            for (int p = startP; p <= endP; p++) {
+                String shell = session.pageShells.get(p);
+                if (shell != null) {
+                    if (p == 1 && session.coverBase64 != null) {
+                        shell = shell.replaceFirst("orig=[\"'][^\"']+[\"']", "src=\"" + session.coverBase64 + "\"");
+                    } else if (chunkJsonps.containsKey(p)) {
+                        int tagEnd = shell.indexOf(">");
+                        if (tagEnd != -1) {
+                            shell = shell.substring(0, tagEnd + 1) + "\n" + chunkJsonps.get(p) + "\n" + shell.substring(tagEnd + 1);
+                        }
+                    }
+                    chunkBody.append(shell).append("\n");
+                }
+            }
+
+            return session.headPart + "\n" + chunkBody.toString() + session.footPart;
+        } catch (Exception e) {
+            log.warn("Failed to build chunk HTML for doc {} (pages {}-{}): {}", session.docId, startP, endP, e.getMessage());
             return null;
         }
     }
