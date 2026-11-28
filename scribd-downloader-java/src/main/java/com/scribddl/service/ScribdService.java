@@ -731,11 +731,19 @@ public class ScribdService {
             html = html.replace("http://html.scribd.com", "https://html.scribdassets.com");
             html = html.replace("http://html.scribdassets.com", "https://html.scribdassets.com");
             if (!jsonpMatches.isEmpty() && jsonpMatches.size() > 15) {
-                // Vector digital book: enable cover image on page 1, avoid 100+ blank white placeholder textures that exhaust memory
+                // Vector digital book: inline cover image on page 1 as base64, avoid 100+ blank white placeholder textures
                 Matcher mCover = Pattern.compile("id=[\"']outer_page_1[\"'][\\s\\S]*?orig=[\"'](https?://[^\"']+)[\"']").matcher(html);
                 if (mCover.find()) {
                     String coverUrl = mCover.group(1);
-                    html = html.replaceFirst("orig=[\"']" + Pattern.quote(coverUrl) + "[\"']", "src=\"" + coverUrl + "\" orig=\"" + coverUrl + "\"");
+                    String coverSrc = coverUrl;
+                    try {
+                        HttpRequest creq = buildRequest(coverUrl, cookie, Duration.ofSeconds(6));
+                        HttpResponse<byte[]> cresp = httpClient.send(creq, HttpResponse.BodyHandlers.ofByteArray());
+                        if (cresp.statusCode() == 200) {
+                            coverSrc = "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(cresp.body());
+                        }
+                    } catch (Exception ignored) {}
+                    html = html.replaceFirst("orig=[\"']" + Pattern.quote(coverUrl) + "[\"']", "src=\"" + coverSrc + "\" orig=\"" + coverUrl + "\"");
                 }
             } else {
                 // Presentation or graphic slides: enable all background images
@@ -752,14 +760,37 @@ public class ScribdService {
                 allFontIds.add(Integer.parseInt(ffMatcher.group(1)));
             }
 
+            // Inlining embedded fonts as base64 data URIs so Chrome renders 100% offline with zero network latency
             StringBuilder fontCss = new StringBuilder();
             if (assetKey != null && !allFontIds.isEmpty()) {
+                final String finalAssetKey = assetKey;
+                Map<Integer, String> fontBase64Map = new ConcurrentHashMap<>();
+                List<CompletableFuture<Void>> fontFuts = new ArrayList<>();
+
                 for (int fid : allFontIds) {
-                    String fCode = String.format("%04d", fid);
-                    String fontUrl = "https://html.scribdassets.com/" + assetKey + "/fonts/" + fCode + ".woff2";
+                    fontFuts.add(CompletableFuture.runAsync(() -> {
+                        String fCode = String.format("%04d", fid);
+                        String fontUrl = "https://html.scribdassets.com/" + finalAssetKey + "/fonts/" + fCode + ".woff2";
+                        try {
+                            HttpRequest freq = buildRequest(fontUrl, cookie, Duration.ofSeconds(6));
+                            HttpResponse<byte[]> fresp = httpClient.send(freq, HttpResponse.BodyHandlers.ofByteArray());
+                            if (fresp.statusCode() == 200) {
+                                fontBase64Map.put(fid, Base64.getEncoder().encodeToString(fresp.body()));
+                            }
+                        } catch (Exception ignored) {}
+                    }, downloadExecutor));
+                }
+
+                try {
+                    CompletableFuture.allOf(fontFuts.toArray(new CompletableFuture[0])).get(6, TimeUnit.SECONDS);
+                } catch (Exception ignored) {}
+
+                for (int fid : allFontIds) {
+                    String b64 = fontBase64Map.get(fid);
+                    String srcVal = (b64 != null) ? "data:font/woff2;base64," + b64 : ("https://html.scribdassets.com/" + assetKey + "/fonts/" + String.format("%04d", fid) + ".woff2");
                     fontCss.append("@font-face {\n")
                             .append("    font-family: 'ff").append(fid).append("';\n")
-                            .append("    src: url('").append(fontUrl).append("') format('woff2');\n")
+                            .append("    src: url('").append(srcVal).append("') format('woff2');\n")
                             .append("    font-display: swap;\n")
                             .append("}\n")
                             .append(".ff").append(fid).append(", div.ff").append(fid).append(", span.ff").append(fid).append(" {\n")
