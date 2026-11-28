@@ -35,6 +35,7 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
@@ -363,8 +364,8 @@ public class ScribdService {
             return cachedFile;
         }
 
-        // 4. PDF TIER 1: Authentic Headless Browser Rendering (1:1 Vector PDF combining Text + Backgrounds + Fonts)
-        if (headlessBrowserService.isAvailable()) {
+        // 4. PDF TIER 1: Authentic Headless Browser Rendering (1:1 Vector PDF for presentations/short vector docs up to 35 pages)
+        if (pageCount <= 35 && headlessBrowserService.isAvailable()) {
             updateProgress(docId, "rendering", pageCount, pageCount, 30, "Rendering 1:1 original layout (" + pageCount + " pages)...");
             String embedHtml = fetchAndPrepareEmbedHtml(docId, effectiveCookie, docInfo.getAssetKey());
             if (embedHtml != null) {
@@ -378,48 +379,79 @@ public class ScribdService {
             log.info("Headless rendering unavailable or incomplete for doc {}. Seamlessly activating High-Res Image Stitcher.", docId);
         }
 
-        // 5. PDF TIER 2: Memory-Safe Streaming Image Stitcher (with Sprite Splitting & Alpha Normalization)
+        // 5. PDF TIER 2: Fast Parallel Image Assembly & Disk-Buffered Streaming Stitcher
         List<PageItem> pageImages = docInfo.getPageImages();
         String assetKey = docInfo.getAssetKey();
         if (pageImages != null && !pageImages.isEmpty() && assetKey != null) {
             int totalImgs = pageImages.size();
-            updateProgress(docId, "downloading", 0, totalImgs, 10, "Starting streaming image assembly (0/" + totalImgs + ")...");
+            updateProgress(docId, "downloading", 0, totalImgs, 10, "Starting fast parallel download (0/" + totalImgs + ")...");
+
+            Map<Integer, File> tempFileMap = new ConcurrentHashMap<>();
+            List<CompletableFuture<Void>> futures = new ArrayList<>();
+            AtomicInteger downloadedCount = new AtomicInteger(0);
+
+            for (int i = 0; i < totalImgs; i++) {
+                final int pageIdx = i;
+                final PageItem item = pageImages.get(i);
+                futures.add(CompletableFuture.runAsync(() -> {
+                    File imgFile = downloadPageImageToFile(item, assetKey, effectiveCookie);
+                    if (imgFile != null) {
+                        tempFileMap.put(pageIdx, imgFile);
+                    }
+                    int done = downloadedCount.incrementAndGet();
+                    if (done % 5 == 0 || done == totalImgs) {
+                        int pct = 10 + (int) ((done / (double) totalImgs) * 75);
+                        updateProgress(docId, "downloading", done, totalImgs, pct, "Downloaded " + done + "/" + totalImgs + " pages...");
+                    }
+                }, downloadExecutor));
+            }
+
+            try {
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(65, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                log.warn("Parallel download completed with partial or timeout for doc {}: {}", docId, e.getMessage());
+            }
+
+            updateProgress(docId, "rendering", totalImgs, totalImgs, 85, "Assembling " + tempFileMap.size() + " pages into PDF...");
 
             try (PDDocument document = new PDDocument()) {
-                int processed = 0;
-                for (PageItem item : pageImages) {
-                    BufferedImage img = downloadPageImage(item, assetKey, effectiveCookie);
-                    if (img != null) {
-                        int iw = img.getWidth();
-                        int ih = img.getHeight();
+                for (int i = 0; i < totalImgs; i++) {
+                    File imgFile = tempFileMap.remove(i);
+                    if (imgFile != null) {
+                        try {
+                            BufferedImage img = ImageIO.read(imgFile);
+                            if (img != null) {
+                                int iw = img.getWidth();
+                                int ih = img.getHeight();
 
-                        if (ih > iw * 1.8) {
-                            int pageH = (int) (iw * 1.414);
-                            if (ih >= iw * 2.5) {
-                                int y = 0;
-                                while (y < ih) {
-                                    int currentSliceHeight = Math.min(pageH, ih - y);
-                                    BufferedImage slice = img.getSubimage(0, y, iw, currentSliceHeight);
-                                    addImagePageToPdf(document, slice);
-                                    slice.flush();
-                                    y += pageH;
+                                if (ih > iw * 1.8) {
+                                    int pageH = (int) (iw * 1.414);
+                                    if (ih >= iw * 2.5) {
+                                        int y = 0;
+                                        while (y < ih) {
+                                            int currentSliceHeight = Math.min(pageH, ih - y);
+                                            BufferedImage slice = img.getSubimage(0, y, iw, currentSliceHeight);
+                                            addImagePageToPdf(document, slice);
+                                            slice.flush();
+                                            y += pageH;
+                                        }
+                                    } else {
+                                        int h2 = ih / 2;
+                                        BufferedImage slice1 = img.getSubimage(0, 0, iw, h2);
+                                        BufferedImage slice2 = img.getSubimage(0, h2, iw, ih - h2);
+                                        addImagePageToPdf(document, slice1);
+                                        addImagePageToPdf(document, slice2);
+                                        slice1.flush();
+                                        slice2.flush();
+                                    }
+                                } else {
+                                    addImagePageToPdf(document, img);
                                 }
-                            } else {
-                                int h2 = ih / 2;
-                                BufferedImage slice1 = img.getSubimage(0, 0, iw, h2);
-                                BufferedImage slice2 = img.getSubimage(0, h2, iw, ih - h2);
-                                addImagePageToPdf(document, slice1);
-                                addImagePageToPdf(document, slice2);
-                                slice1.flush();
-                                slice2.flush();
+                                img.flush();
                             }
-                        } else {
-                            addImagePageToPdf(document, img);
+                        } finally {
+                            try { imgFile.delete(); } catch (Exception ignored) {}
                         }
-                        img.flush();
-                        processed++;
-                        int pct = Math.min(95, 10 + (int) ((processed / (double) totalImgs) * 85));
-                        updateProgress(docId, "downloading", processed, totalImgs, pct, "Processed slide " + processed + " of " + totalImgs);
                     }
                 }
 
@@ -430,7 +462,7 @@ public class ScribdService {
                     return cachedFile;
                 }
             } catch (Exception e) {
-                log.error("Streaming image assembly failed for doc {}: {}", docId, e.getMessage());
+                log.error("Disk-buffered image assembly failed for doc {}: {}", docId, e.getMessage());
             }
         }
 
@@ -474,6 +506,40 @@ public class ScribdService {
             updateProgress(docId, "complete", pageCount, pageCount, 100, "Complete " + pageCount + "-page PDF ready!");
             return cachedFile;
         }
+    }
+
+    private File downloadPageImageToFile(PageItem item, String assetKey, String cookie) {
+        List<String> extsToTry = new ArrayList<>(Arrays.asList("jpg", "png", "webp"));
+        if (item.getPrimaryExt() != null && !item.getPrimaryExt().isBlank() && !extsToTry.contains(item.getPrimaryExt())) {
+            extsToTry.add(1, item.getPrimaryExt());
+        }
+
+        List<String> domains = Arrays.asList("html.scribdassets.com", "html.scribd.com");
+
+        for (String domain : domains) {
+            for (String ext : extsToTry) {
+                String imgUrl = "https://" + domain + "/" + assetKey + "/images/" + item.getPage() + "-" + item.getHash() + "." + ext;
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    try {
+                        HttpRequest req = buildRequest(imgUrl, cookie, Duration.ofSeconds(10));
+                        HttpResponse<InputStream> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofInputStream());
+                        if (resp.statusCode() == 200) {
+                            File tempFile = File.createTempFile("sc_p" + item.getPage() + "_", "." + ext);
+                            tempFile.deleteOnExit();
+                            try (InputStream in = resp.body(); FileOutputStream out = new FileOutputStream(tempFile)) {
+                                in.transferTo(out);
+                            }
+                            if (tempFile.length() > 500) {
+                                return tempFile;
+                            } else {
+                                tempFile.delete();
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                }
+            }
+        }
+        return null;
     }
 
     private BufferedImage downloadPageImage(PageItem item, String assetKey, String cookie) {
