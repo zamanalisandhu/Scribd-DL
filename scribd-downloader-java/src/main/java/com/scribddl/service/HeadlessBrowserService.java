@@ -103,8 +103,8 @@ public class HeadlessBrowserService {
                     "--disable-component-update",
                     "--disable-speech-api",
                     "--disable-accelerated-2d-canvas",
+                    "--dbus-stub",
                     "--renderer-process-limit=1",
-                    "--js-flags=--max-old-space-size=64",
                     "--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process,MediaRouter",
                     "--metrics-recording-only",
                     "--no-first-run",
@@ -118,6 +118,7 @@ public class HeadlessBrowserService {
             ));
 
             ProcessBuilder pb = new ProcessBuilder(command);
+            pb.environment().put("DBUS_SESSION_BUS_ADDRESS", "disabled:");
             pb.redirectErrorStream(true);
             Process process = pb.start();
 

@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PORT=8080
+ENV DBUS_SESSION_BUS_ADDRESS=disabled:
 EXPOSE 8080
 
 RUN mkdir -p cache

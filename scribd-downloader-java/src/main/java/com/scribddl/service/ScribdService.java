@@ -368,7 +368,7 @@ public class ScribdService {
         // 4. PDF TIER 1: Authentic Headless Browser Rendering with Chunking (1:1 Vector PDF for presentations and books up to 250 pages)
         if (pageCount <= 250 && headlessBrowserService.isAvailable()) {
             updateProgress(docId, "rendering", 0, pageCount, 15, "Preparing 1:1 vector layout (" + pageCount + " pages)...");
-            int chunkSize = 20;
+            int chunkSize = (pageCount > 50) ? 10 : 20;
             List<String> htmlChunks = fetchAndPrepareEmbedHtmlChunks(docId, effectiveCookie, docInfo.getAssetKey(), pageCount, chunkSize);
             if (htmlChunks != null && !htmlChunks.isEmpty()) {
                 List<byte[]> partPdfs = new ArrayList<>();
@@ -812,7 +812,8 @@ public class ScribdService {
             html = html.replaceAll("<iframe[\\s\\S]*?</iframe>", "");
             html = html.replaceAll("<iframe[^>]*>", "");
             html = html.replaceAll("<noscript[\\s\\S]*?</noscript>", "");
-            html = html.replaceAll("<link\\s+rel=[\"']stylesheet[\"'][^>]*>", "");
+            html = html.replaceAll("<link[^>]*>", "");
+            html = html.replaceAll("<meta[^>]*>", "");
 
             // Auto-detect native document dimensions
             int nativeW = 902;
