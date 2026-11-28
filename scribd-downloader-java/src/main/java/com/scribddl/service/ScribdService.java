@@ -48,7 +48,7 @@ public class ScribdService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final HeadlessBrowserService headlessBrowserService;
     private final HttpClient httpClient;
-    private final ExecutorService downloadExecutor = Executors.newFixedThreadPool(4);
+    private final ExecutorService downloadExecutor = Executors.newFixedThreadPool(16);
 
     private final Map<String, DocInfo> metaCache = new ConcurrentHashMap<>();
     private final Map<String, ProgressInfo> progressTracker = new ConcurrentHashMap<>();
@@ -364,16 +364,46 @@ public class ScribdService {
             return cachedFile;
         }
 
-        // 4. PDF TIER 1: Authentic Headless Browser Rendering (1:1 Vector PDF for presentations and books up to 250 pages)
+        // 4. PDF TIER 1: Authentic Headless Browser Rendering with Chunking (1:1 Vector PDF for presentations and books up to 250 pages)
         if (pageCount <= 250 && headlessBrowserService.isAvailable()) {
-            updateProgress(docId, "rendering", pageCount, pageCount, 30, "Rendering 1:1 original layout (" + pageCount + " pages)...");
-            String embedHtml = fetchAndPrepareEmbedHtml(docId, effectiveCookie, docInfo.getAssetKey());
-            if (embedHtml != null) {
-                byte[] pdfBytes = headlessBrowserService.renderHtmlToPdf(embedHtml, docId, pageCount);
-                if (pdfBytes != null && pdfBytes.length > 2000) {
-                    Files.write(cachedFile.toPath(), pdfBytes);
-                    updateProgress(docId, "complete", pageCount, pageCount, 100, "Complete " + pageCount + "-page vector PDF ready!");
-                    return cachedFile;
+            updateProgress(docId, "rendering", 0, pageCount, 15, "Preparing 1:1 vector layout (" + pageCount + " pages)...");
+            List<String> htmlChunks = fetchAndPrepareEmbedHtmlChunks(docId, effectiveCookie, docInfo.getAssetKey(), pageCount, 25);
+            if (htmlChunks != null && !htmlChunks.isEmpty()) {
+                List<byte[]> partPdfs = new ArrayList<>();
+                boolean allSucceeded = true;
+                int totalChunks = htmlChunks.size();
+
+                for (int c = 0; c < totalChunks; c++) {
+                    int startP = c * 25 + 1;
+                    int endP = Math.min(pageCount, (c + 1) * 25);
+                    int chunkPages = endP - startP + 1;
+                    int pct = 20 + (int) (((c + 1) / (double) totalChunks) * 75);
+                    updateProgress(docId, "rendering", endP, pageCount, pct, "Rendering vector pages " + endP + "/" + pageCount + "...");
+                    byte[] chunkPdf = headlessBrowserService.renderHtmlToPdf(htmlChunks.get(c), docId + "_part" + (c + 1), chunkPages);
+                    if (chunkPdf != null && chunkPdf.length > 500) {
+                        partPdfs.add(chunkPdf);
+                    } else {
+                        log.warn("Chunk {} failed for doc {}", c + 1, docId);
+                        allSucceeded = false;
+                        break;
+                    }
+                }
+
+                if (allSucceeded && !partPdfs.isEmpty()) {
+                    try (PDDocument mergedDoc = new PDDocument()) {
+                        for (byte[] partBytes : partPdfs) {
+                            try (PDDocument partDoc = Loader.loadPDF(partBytes)) {
+                                for (PDPage p : partDoc.getPages()) {
+                                    mergedDoc.importPage(p);
+                                }
+                            }
+                        }
+                        mergedDoc.save(cachedFile);
+                        updateProgress(docId, "complete", pageCount, pageCount, 100, "Complete " + pageCount + "-page vector PDF ready!");
+                        return cachedFile;
+                    } catch (Exception e) {
+                        log.warn("Failed to merge PDF chunks for doc {}: {}", docId, e.getMessage());
+                    }
                 }
             }
             log.info("Headless rendering unavailable or incomplete for doc {}. Seamlessly activating High-Res Image Stitcher.", docId);
@@ -602,6 +632,11 @@ public class ScribdService {
     }
 
     public String fetchAndPrepareEmbedHtml(String docId, String cookie, String initialAssetKey) {
+        List<String> chunks = fetchAndPrepareEmbedHtmlChunks(docId, cookie, initialAssetKey, 25, 25);
+        return (chunks != null && !chunks.isEmpty()) ? chunks.get(0) : null;
+    }
+
+    public List<String> fetchAndPrepareEmbedHtmlChunks(String docId, String cookie, String initialAssetKey, int totalPages, int chunkSize) {
         try {
             String embedUrl = "https://www.scribd.com/embeds/" + docId + "/content";
             HttpRequest req = buildRequest(embedUrl, cookie, Duration.ofSeconds(12));
@@ -836,9 +871,52 @@ public class ScribdService {
             } else {
                 html = printRules + html;
             }
-            return html;
+
+            // If document fits within 1 chunk, return immediately
+            if (totalPages <= chunkSize) {
+                return Collections.singletonList(html);
+            }
+
+            // Slicing into lightweight chunk HTMLs
+            int pContIdx = html.indexOf("class=\"outer_page_container\"");
+            if (pContIdx == -1) {
+                return Collections.singletonList(html);
+            }
+            int scrollerTagEnd = html.indexOf(">", pContIdx);
+            String headPart = html.substring(0, scrollerTagEnd + 1);
+            String footPart = "\n</div></div></div></div></body></html>";
+
+            Map<Integer, String> pageBlocks = new HashMap<>();
+            Matcher pMatcher = Pattern.compile("<div[^>]*id=[\"']outer_page_(\\d+)[\"'][^>]*>").matcher(html);
+            List<int[]> blockIndices = new ArrayList<>();
+            while (pMatcher.find()) {
+                blockIndices.add(new int[]{Integer.parseInt(pMatcher.group(1)), pMatcher.start()});
+            }
+
+            for (int i = 0; i < blockIndices.size(); i++) {
+                int pn = blockIndices.get(i)[0];
+                int startIdx = blockIndices.get(i)[1];
+                int endIdx = (i + 1 < blockIndices.size()) ? blockIndices.get(i + 1)[1] : html.lastIndexOf("</div>");
+                if (endIdx > startIdx) {
+                    pageBlocks.put(pn, html.substring(startIdx, endIdx));
+                }
+            }
+
+            List<String> chunks = new ArrayList<>();
+            for (int startP = 1; startP <= totalPages; startP += chunkSize) {
+                int endP = Math.min(totalPages, startP + chunkSize - 1);
+                StringBuilder chunkBody = new StringBuilder();
+                for (int p = startP; p <= endP; p++) {
+                    String pb = pageBlocks.get(p);
+                    if (pb != null) {
+                        chunkBody.append(pb);
+                    }
+                }
+                chunks.add(headPart + "\n" + chunkBody.toString() + footPart);
+            }
+            return chunks;
         } catch (Exception e) {
-            log.warn("Failed to prepare embed HTML for doc {}: {}", docId, e.getMessage());
+            log.warn("Failed to prepare embed HTML chunks for doc {}: {}", docId, e.getMessage());
             return null;
         }
     }
