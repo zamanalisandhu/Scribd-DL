@@ -674,27 +674,22 @@ public class ScribdService {
 
                 CompletableFuture.allOf(futs.toArray(new CompletableFuture[0])).join();
 
-                // Inject fetched page chunks into outer_page divs
-                for (Map.Entry<Integer, String> entry : jsonpPageContents.entrySet()) {
-                    int pn = entry.getKey();
-                    String pContent = entry.getValue();
-                    String outerTarget = "id=\"outer_page_" + pn + "\"";
-
-                    if (html.contains(outerTarget)) {
-                        int idx = html.indexOf(outerTarget);
-                        int tagEnd = html.indexOf(">", idx);
-                        if (tagEnd != -1) {
-                            html = html.substring(0, tagEnd + 1) + "\n" + pContent + "\n" + html.substring(tagEnd + 1);
-                        }
-                    } else {
-                        String newOuter = "<div class=\"outer_page only_ie6_border\" id=\"outer_page_" + pn + "\" style=\"width:902px; height:1167px;\">\n" + pContent + "\n</div>\n";
-                        int scrollerIdx = html.indexOf("class=\"document_scroller");
-                        if (scrollerIdx != -1) {
-                            int tagEnd = html.indexOf(">", scrollerIdx);
-                            html = html.substring(0, tagEnd + 1) + "\n" + newOuter + html.substring(tagEnd + 1);
-                        }
+                // Fast Single-Pass Linear Assembly into StringBuilder (Zero-Copy O(N))
+                StringBuilder assembled = new StringBuilder(html.length() + jsonpPageContents.size() * 3000);
+                int lastPos = 0;
+                Matcher outerMatcher = Pattern.compile("id=[\"']outer_page_(\\d+)[\"'][^>]*>").matcher(html);
+                while (outerMatcher.find()) {
+                    int tagEnd = outerMatcher.end();
+                    assembled.append(html, lastPos, tagEnd);
+                    int pageNum = Integer.parseInt(outerMatcher.group(1));
+                    String pContent = jsonpPageContents.get(pageNum);
+                    if (pContent != null) {
+                        assembled.append("\n").append(pContent).append("\n");
                     }
+                    lastPos = tagEnd;
                 }
+                assembled.append(html, lastPos, html.length());
+                html = assembled.toString();
             }
 
             // Universal Asset Normalization across the ENTIRE merged document
