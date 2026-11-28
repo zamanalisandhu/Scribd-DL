@@ -814,6 +814,18 @@
 
     <!-- Interactive Scripts -->
     <script>
+        // Backend Configuration: Auto-detects local vs live Render cloud backend
+        const BACKEND_URL = 'https://scribd-dl.onrender.com';
+        const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+            ? ''
+            : BACKEND_URL;
+
+        // Smart Auto-Wakeup: Ping Render backend as soon as user opens the site
+        window.addEventListener('DOMContentLoaded', () => {
+            if (API_BASE) {
+                fetch(API_BASE + '/api/diag', { mode: 'no-cors' }).catch(() => {});
+            }
+        });
         // Initialize Lucide icons
         lucide.createIcons();
 
@@ -1106,7 +1118,7 @@
                     try { localStorage.setItem('scribd_session_cookie', cookieVal); } catch(e) {}
                 }
 
-                let apiUrl = '/api/scribd?url=' + encodeURIComponent(rawUrl);
+                let apiUrl = API_BASE + '/api/scribd?url=' + encodeURIComponent(rawUrl);
                 if (cookieVal) {
                     apiUrl += '&cookie=' + encodeURIComponent(cookieVal);
                 }
@@ -1447,7 +1459,7 @@ ET`;
             if (docId && dlProgressSection) {
                 pollInterval = setInterval(async () => {
                     try {
-                        const pRes = await fetch(`/api/progress?doc_id=${docId}`);
+                        const pRes = await fetch(`${API_BASE}/api/progress?doc_id=${docId}`);
                         if (pRes.ok) {
                             const pData = await pRes.json();
                             if (pData && pData.percent !== undefined) {
@@ -1466,7 +1478,7 @@ ET`;
 
             try {
                 const cookieVal = scribdCookieInput ? scribdCookieInput.value.trim() : '';
-                let downloadUrl = `/api/download?url=${encodeURIComponent(rawUrl)}&format=${format}`;
+                let downloadUrl = `${API_BASE}/api/download?url=${encodeURIComponent(rawUrl)}&format=${format}`;
                 if (cookieVal) {
                     downloadUrl += `&cookie=${encodeURIComponent(cookieVal)}`;
                 }
