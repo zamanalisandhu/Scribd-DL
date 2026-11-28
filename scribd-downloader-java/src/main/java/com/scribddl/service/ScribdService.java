@@ -700,8 +700,18 @@ public class ScribdService {
             // Universal Asset Normalization across the ENTIRE merged document
             html = html.replace("http://html.scribd.com", "https://html.scribdassets.com");
             html = html.replace("http://html.scribdassets.com", "https://html.scribdassets.com");
-            html = html.replaceAll("orig=[\"'](https?://[^\"']+)[\"']", "src=\"$1\" orig=\"$1\"");
-            html = html.replaceAll("data-src=[\"'](https?://[^\"']+)[\"']", "src=\"$1\" data-src=\"$1\"");
+            if (!jsonpMatches.isEmpty() && jsonpMatches.size() > 15) {
+                // Vector digital book: enable cover image on page 1, avoid 100+ blank white placeholder textures that exhaust memory
+                Matcher mCover = Pattern.compile("id=[\"']outer_page_1[\"'][\\s\\S]*?orig=[\"'](https?://[^\"']+)[\"']").matcher(html);
+                if (mCover.find()) {
+                    String coverUrl = mCover.group(1);
+                    html = html.replaceFirst("orig=[\"']" + Pattern.quote(coverUrl) + "[\"']", "src=\"" + coverUrl + "\" orig=\"" + coverUrl + "\"");
+                }
+            } else {
+                // Presentation or graphic slides: enable all background images
+                html = html.replaceAll("orig=[\"'](https?://[^\"']+)[\"']", "src=\"$1\" orig=\"$1\"");
+                html = html.replaceAll("data-src=[\"'](https?://[^\"']+)[\"']", "src=\"$1\" data-src=\"$1\"");
+            }
             html = html.replaceAll("opacity:\\s*0\\.01", "opacity: 1");
             html = html.replaceAll("opacity:0\\.01", "opacity: 1");
 
