@@ -364,8 +364,8 @@ public class ScribdService {
             return cachedFile;
         }
 
-        // 4. PDF TIER 1: Authentic Headless Browser Rendering (1:1 Vector PDF for presentations/short vector docs up to 35 pages)
-        if (pageCount <= 35 && headlessBrowserService.isAvailable()) {
+        // 4. PDF TIER 1: Authentic Headless Browser Rendering (1:1 Vector PDF for presentations and books up to 250 pages)
+        if (pageCount <= 250 && headlessBrowserService.isAvailable()) {
             updateProgress(docId, "rendering", pageCount, pageCount, 30, "Rendering 1:1 original layout (" + pageCount + " pages)...");
             String embedHtml = fetchAndPrepareEmbedHtml(docId, effectiveCookie, docInfo.getAssetKey());
             if (embedHtml != null) {
@@ -732,6 +732,7 @@ public class ScribdService {
             html = html.replaceAll("<iframe[\\s\\S]*?</iframe>", "");
             html = html.replaceAll("<iframe[^>]*>", "");
             html = html.replaceAll("<noscript[\\s\\S]*?</noscript>", "");
+            html = html.replaceAll("<link\\s+rel=[\"']stylesheet[\"'][^>]*>", "");
 
             // Auto-detect native document dimensions
             int nativeW = 902;
@@ -788,6 +789,10 @@ public class ScribdService {
                     "    overflow: hidden !important; \n" +
                     "    contain: none !important; \n" +
                     "    border: none !important; \n" +
+                    "}\n" +
+                    ".outer_page:last-child, .outer_page:last-of-type { \n" +
+                    "    page-break-after: auto !important; \n" +
+                    "    break-after: auto !important; \n" +
                     "}\n" +
                     ".newpage { \n" +
                     "    position: absolute !important; \n" +
